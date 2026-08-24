@@ -1,0 +1,10 @@
+{
+  "Author": "Angelways",
+  "Name": "OCNFarmer",
+  "Punchline": "自动管理蜃景幻界新月岛 北征之章 FT、宝箱与寻宝流程。",
+  "Description": "蜃景幻界新月岛 北征之章自动寻宝",
+  "ApplicableVersion": "any",
+  "RepoUrl": "https://github.com/Angelways/OCNFarmer",
+  "Tags": ["Occult Crescent", "宝箱", "中文"],
+  "IconUrl": "https://raw.githubusercontent.com/goatcorp/Dalamud/master/images/logo.png"
+}

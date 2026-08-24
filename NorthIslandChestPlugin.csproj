@@ -1,0 +1,41 @@
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+    <Version>1.0.0</Version>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Author>Angelways</Author>
+    <Name>OCNFarmer</Name>
+    <Punchline>监听系统消息并自动管理蜃景幻界新月岛 北征之章 FT 与宝箱上限。</Punchline>
+    <Description>蜃景幻界新月岛 北征之章自动寻宝</Description>
+    <RepoUrl>https://github.com/Angelways/OCNFarmer</RepoUrl>
+    <Tags>Occult Crescent;宝箱;中文</Tags>
+    <DalamudLibPath>D:\XIVLauncherCN\addon\Hooks\dev</DalamudLibPath>
+    <Use_Dalamud_FFXIVClientStructs>true</Use_Dalamud_FFXIVClientStructs>
+    <Use_Dalamud_Lumina>false</Use_Dalamud_Lumina>
+    <Use_Dalamud_Lumina_Excel>false</Use_Dalamud_Lumina_Excel>
+    <Use_Dalamud_Newtonsoft_Json>false</Use_Dalamud_Newtonsoft_Json>
+    <Use_Dalamud_Serilog>false</Use_Dalamud_Serilog>
+    <Use_Dalamud_MSObjectPool>false</Use_Dalamud_MSObjectPool>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Remove="FFXIVClientStructs" />
+    <Compile Remove="_dalamud\**" />
+    <None Remove="_dalamud\**" />
+    <EmbeddedResource Remove="_dalamud\**" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="FFXIVClientStructs" HintPath="$(DalamudLibPath)\FFXIVClientStructs.dll" Private="false" />
+    <Reference Update="Dalamud"><HintPath>$(DalamudLibPath)\Dalamud.dll</HintPath></Reference>
+    <Reference Update="Dalamud.Bindings.ImGui"><HintPath>$(DalamudLibPath)\Dalamud.Bindings.ImGui.dll</HintPath></Reference>
+    <Reference Update="Dalamud.Bindings.ImPlot"><HintPath>$(DalamudLibPath)\Dalamud.Bindings.ImPlot.dll</HintPath></Reference>
+    <Reference Update="Dalamud.Bindings.ImGuizmo"><HintPath>$(DalamudLibPath)\Dalamud.Bindings.ImGuizmo.dll</HintPath></Reference>
+    <Reference Update="InteropGenerator.Runtime"><HintPath>$(DalamudLibPath)\InteropGenerator.Runtime.dll</HintPath></Reference>
+    <Reference Update="Lumina"><HintPath>$(DalamudLibPath)\Lumina.dll</HintPath></Reference>
+    <Reference Update="Lumina.Excel"><HintPath>$(DalamudLibPath)\Lumina.Excel.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

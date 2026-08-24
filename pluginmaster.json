@@ -1,0 +1,14 @@
+[
+  {
+    "Author": "Angelways",
+    "Name": "OCNFarmer",
+    "InternalName": "NorthIslandChestPlugin",
+    "AssemblyVersion": "1.0.0",
+    "Description": "蜃景幻界新月岛 北征之章自动寻宝",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
+    "DownloadLinkInstall": "https://github.com/Angelways/OCNFarmer/releases/download/v1.0.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Angelways/OCNFarmer/releases/download/v1.0.0/latest.zip",
+    "Changelog": "首个正式版本"
+  }
+]
