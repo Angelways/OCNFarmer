@@ -7,8 +7,8 @@
     "Description": "蜃景幻界新月岛 北征之章自动寻宝。启动命令：/ocnstart；停止命令：/ocnstop",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
-    "DownloadLinkInstall": "https://github.com/Angelways/OCNFarmer/releases/download/v1.2.0/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/Angelways/OCNFarmer/releases/download/v1.2.0/latest.zip",
+    "DownloadLinkInstall": "https://github.com/Angelways/OCNFarmer/releases/download/v1.2.0.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Angelways/OCNFarmer/releases/download/v1.2.0.0/latest.zip",
     "Changelog": "新增 /ocnstart 与 /ocnstop 命令并修正自动丢弃提示"
   }
 ]
