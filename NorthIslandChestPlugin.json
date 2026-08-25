@@ -3,7 +3,7 @@
   "Name": "OCNFarmer",
   "Punchline": "自动管理蜃景幻界新月岛 北征之章 FT、宝箱与寻宝流程。",
   "Description": "蜃景幻界新月岛 北征之章自动寻宝。启动命令：/ocnstart；停止命令：/ocnstop",
-  "IconUrl": "https://raw.githubusercontent.com/Angelways/OCNFarmer/main/assets/icon.png"，
+  "IconUrl": "https://raw.githubusercontent.com/Angelways/OCNFarmer/main/assets/icon.png",
   "ApplicableVersion": "any",
   "RepoUrl": "https://github.com/Angelways/OCNFarmer",
   "Tags": ["Occult Crescent", "宝箱", "中文"],
