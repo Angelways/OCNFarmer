@@ -5,6 +5,7 @@ using Dalamud.Game.Chat;
 using Dalamud.Game.Command;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
+using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
@@ -15,14 +16,14 @@ namespace NorthIslandChestPlugin;
 
 public sealed class Plugin : IDalamudPlugin
 {
-    private const string PluginVersion = "1.0.0";
+    private const string PluginVersion = "1.1.0.0";
     private static readonly string[] CombatJobs =
     {
-        "辅助白魔法师", "辅助骑士", "辅助狂战士", "辅助黑魔法师", "辅助青魔法师",
-        "辅助炮术师", "辅助炼金术士", "辅助舞者", "辅助龙骑士", "自由人",
-        "辅助风水士", "辅助武僧", "辅助死灵法师", "辅助忍者", "辅助预言师",
-        "辅助游侠", "辅助赤魔法师", "辅助武士", "辅助召唤师", "辅助盗贼",
-        "辅助时间魔法师", "辅助诗人"
+        "辅助白魔法师", "辅助武士", "辅助猎人", "辅助武僧", "辅助狂战士",
+        "辅助骑士", "辅助药剂师", "辅助炮击士", "辅助时魔法师", "辅助风水师",
+        "辅助吟游诗人", "辅助舞者", "辅助剑斗士", "辅助魔法剑士", "辅助盗贼",
+        "辅助预言师", "辅助召唤师", "辅助龙骑士", "辅助黑魔法师", "辅助忍者",
+        "辅助亡灵法师", "辅助赤魔法师", "辅助青魔法师"
     };
     private const uint TreasureGeneralActionSlot = 32;
     private const ulong GeneralActionTarget = 3758096384UL;
@@ -37,10 +38,9 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan JobChangeDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan ReturnScanDelay = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan TreasureCommandDelay = TimeSpan.FromMilliseconds(500);
-    private static readonly TimeSpan TeleportCheckDelay = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan LeaveDutyDelay = TimeSpan.FromSeconds(5);
 
-    private enum TreasurePhase { None, FirstTeleport, InnerCheck, InnerMount, InnerStart, InnerReturn, SecondTeleport, OuterCheck, OuterMount, OuterStart, OuterReturn, LeaveDuty, Reentry }
+    private enum TreasurePhase { None, FirstMove, FirstCrystal, FirstWaitPlayers, InnerMount, InnerStart, InnerReturn, SecondMove, SecondCrystal, SecondWaitPlayers, OuterMount, OuterStart, OuterReturn, LeaveDuty, Reentry }
 
     private readonly IChatGui chat;
     private readonly IClientState clientState;
@@ -57,11 +57,13 @@ public sealed class Plugin : IDalamudPlugin
     private DateTime nextAllowedScanAt = DateTime.MinValue;
     private DateTime treasurePhaseAt = DateTime.MinValue;
     private TreasurePhase treasurePhase;
-    private string teleportX = "928";
-    private string teleportY = "190";
-    private string teleportZ = "743";
     private string combatJob = "辅助白魔法师";
-    private Vector3 teleportTarget;
+    private string discardPreset = "";
+    private DateTime playerWaitStartedAt = DateTime.MinValue;
+    private DateTime nextPlayerCheckAt = DateTime.MinValue;
+    private string currentCrystal = "";
+    private bool innerLeg;
+    private static readonly string[] Crystals = { "妖火", "城塞", "圣堂", "遗迹", "街道" };
     private string treasureError = "";
     private bool running;
     private bool bocchiEnabled;
@@ -186,6 +188,8 @@ public sealed class Plugin : IDalamudPlugin
         {
             pendingBocchiAt = DateTime.MinValue;
             Send("/bocchiillegal on");
+            if (!string.IsNullOrWhiteSpace(discardPreset))
+                Send($"/pdrdiscard {discardPreset.Trim()}");
             bocchiEnabled = true;
             status = $"{combatJob}已切换，BOCCHI 已开启，正在刷 FT";
         }
@@ -313,9 +317,9 @@ public sealed class Plugin : IDalamudPlugin
              text.Contains($"{localPlayerName}发动了\"亚返回\"", StringComparison.Ordinal));
         if (ownReturnCompleted && treasurePhase == TreasurePhase.InnerReturn)
         {
-            treasurePhase = TreasurePhase.SecondTeleport;
+            treasurePhase = TreasurePhase.SecondMove;
             treasurePhaseAt = DateTime.UtcNow + ReturnScanDelay;
-            status = "内环寻宝完成，本角色亚返回已完成，5 秒后执行第二次传送...";
+            status = "内环寻宝完成，本角色亚返回已完成，5 秒后移动至小水晶区域...";
             log.Information("检测到寻宝内环的本角色亚返回完成消息");
             return;
         }
@@ -384,20 +388,11 @@ public sealed class Plugin : IDalamudPlugin
 
     private void BeginTreasureProcedure()
     {
-        if (!TryReadTeleportTarget(out var error))
-        {
-            treasureError = error;
-            status = error;
-            treasurePhase = TreasurePhase.None;
-            running = false;
-            return;
-        }
-
         treasureError = "";
-        treasurePhase = TreasurePhase.FirstTeleport;
+        treasurePhase = TreasurePhase.FirstMove;
         treasurePhaseAt = DateTime.UtcNow + TreasureCommandDelay;
-        status = $"宝箱达到上限（银 {silver}/{MaxSilver}，铜 {copper}/{MaxCopper}），准备传送寻宝...";
-        log.Information("宝箱达到上限，0.5 秒后关闭 BOCCHI 非法模式并执行第一次传送");
+        status = $"宝箱达到上限（银 {silver}/{MaxSilver}，铜 {copper}/{MaxCopper}），准备移动至小水晶...";
+        log.Information("宝箱达到上限，0.5 秒后关闭 BOCCHI 并移动至小水晶区域");
     }
 
     private void UpdateTreasureProcedure()
@@ -406,19 +401,29 @@ public sealed class Plugin : IDalamudPlugin
         treasurePhaseAt = DateTime.MinValue;
         switch (treasurePhase)
         {
-            case TreasurePhase.FirstTeleport:
+            case TreasurePhase.FirstMove:
                 Send("/bocchiillegal off");
                 bocchiEnabled = false;
-                SendTeleport();
-                treasurePhase = TreasurePhase.InnerCheck;
-                treasurePhaseAt = DateTime.UtcNow + TeleportCheckDelay;
-                status = "第一次传送已执行，5 秒后检查位置...";
+                Send("/vnav moveto 882 258.5 882");
+                treasurePhase = TreasurePhase.FirstCrystal;
+                treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+                status = "正在移动至小水晶区域，等待 10 秒...";
                 return;
-            case TreasurePhase.SecondTeleport:
-                SendTeleport();
-                treasurePhase = TreasurePhase.OuterCheck;
-                treasurePhaseAt = DateTime.UtcNow + TeleportCheckDelay;
-                status = "第二次传送已执行，5 秒后检查位置...";
+            case TreasurePhase.FirstCrystal:
+                BeginCrystalWait(true);
+                return;
+            case TreasurePhase.SecondMove:
+                Send("/vnav moveto 882 258.5 882");
+                treasurePhase = TreasurePhase.SecondCrystal;
+                treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+                status = "正在移动至小水晶区域，等待 10 秒...";
+                return;
+            case TreasurePhase.SecondCrystal:
+                BeginCrystalWait(false);
+                return;
+            case TreasurePhase.FirstWaitPlayers:
+            case TreasurePhase.SecondWaitPlayers:
+                CheckCrystalPlayers();
                 return;
             case TreasurePhase.InnerMount:
                 Send("/gaction 随机坐骑");
@@ -443,7 +448,7 @@ public sealed class Plugin : IDalamudPlugin
                 status = "已开始外环寻宝，等待本角色亚返回...";
                 return;
             case TreasurePhase.LeaveDuty:
-                Send("/xsz-leaveduty");
+                Send("/pdr leaveduty");
                 treasurePhase = TreasurePhase.Reentry;
                 treasurePhaseAt = DateTime.UtcNow + LeaveDutyDelay;
                 status = "正在退出副本，5 秒后重新开始循环...";
@@ -467,52 +472,63 @@ public sealed class Plugin : IDalamudPlugin
                 break;
         }
 
-        if (treasurePhase is TreasurePhase.InnerCheck or TreasurePhase.OuterCheck)
-        {
-            if (!IsAtTeleportTarget())
-            {
-                treasureError = "TP 后未到达目标位置（允许误差 5 米），插件已停止；请检查 XSZToolbox 加载验证状态与 TP 功能开关";
-                status = treasureError;
-                treasurePhase = TreasurePhase.None;
-                running = false;
-                return;
-            }
+    }
 
-            if (treasurePhase == TreasurePhase.InnerCheck)
+    private void BeginCrystalWait(bool firstLeg)
+    {
+        innerLeg = firstLeg;
+        currentCrystal = Crystals[Random.Shared.Next(Crystals.Length)];
+        Send($"/pdr ptp {currentCrystal}");
+        treasurePhase = firstLeg ? TreasurePhase.FirstWaitPlayers : TreasurePhase.SecondWaitPlayers;
+        treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+        playerWaitStartedAt = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+        nextPlayerCheckAt = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+        status = $"已传送至小水晶：{currentCrystal}，等待 2 秒后检测周围玩家...";
+    }
+
+    private void CheckCrystalPlayers()
+    {
+        if (DateTime.UtcNow < nextPlayerCheckAt) return;
+        nextPlayerCheckAt = DateTime.UtcNow.AddSeconds(1);
+        if (HasNearbyPlayer(50f))
+        {
+            status = "等待周围玩家中...";
+            if (DateTime.UtcNow - playerWaitStartedAt > TimeSpan.FromSeconds(15))
             {
-                treasurePhase = TreasurePhase.InnerMount;
-                treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
-                status = "已到达内环位置，1 秒后召唤随机坐骑...";
+                var alternatives = Crystals.Where(x => x != currentCrystal).ToArray();
+                currentCrystal = alternatives[Random.Shared.Next(alternatives.Length)];
+                Send($"/pdr ptp {currentCrystal}");
+                playerWaitStartedAt = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+                nextPlayerCheckAt = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+                status = $"周围玩家等待超过 15 秒，已换传小水晶：{currentCrystal}...";
             }
-            else
-            {
-                treasurePhase = TreasurePhase.OuterMount;
-                treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
-                status = "已到达外环位置，1 秒后召唤随机坐骑...";
-            }
+            return;
+        }
+
+        if (innerLeg)
+        {
+            treasurePhase = TreasurePhase.InnerMount;
+            treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+            status = "周围 50 米内无玩家，1 秒后召唤随机坐骑...";
+        }
+        else
+        {
+            treasurePhase = TreasurePhase.OuterMount;
+            treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+            status = "周围 50 米内无玩家，1 秒后召唤随机坐骑...";
         }
     }
 
-    private void SendTeleport() => Send($"/xsz-tp {teleportTarget.X.ToString(CultureInfo.InvariantCulture)} {teleportTarget.Y.ToString(CultureInfo.InvariantCulture)} {teleportTarget.Z.ToString(CultureInfo.InvariantCulture)}");
-
-    private bool TryReadTeleportTarget(out string error)
+    private bool HasNearbyPlayer(float radius)
     {
-        if (!float.TryParse(teleportX, NumberStyles.Float, CultureInfo.InvariantCulture, out var x) ||
-            !float.TryParse(teleportY, NumberStyles.Float, CultureInfo.InvariantCulture, out var y) ||
-            !float.TryParse(teleportZ, NumberStyles.Float, CultureInfo.InvariantCulture, out var z))
+        var local = objects.LocalPlayer;
+        if (local == null) return true;
+        foreach (var obj in objects)
         {
-            error = "传送坐标格式错误，请填写 x y z 三个数字";
-            return false;
+            if (obj.ObjectKind == ObjectKind.Pc && obj.Address != local.Address && Vector3.Distance(obj.Position, local.Position) <= radius)
+                return true;
         }
-        teleportTarget = new Vector3(x, y, z);
-        error = "";
-        return true;
-    }
-
-    private bool IsAtTeleportTarget()
-    {
-        var player = objects.LocalPlayer;
-        return player != null && Vector3.Distance(player.Position, teleportTarget) <= 5f;
+        return false;
     }
 
     private bool IsIsland() => clientState.TerritoryType == IslandTerritory;
@@ -546,14 +562,27 @@ public sealed class Plugin : IDalamudPlugin
         ImGui.Spacing();
         if (ImGui.CollapsingHeader("使用说明"))
         {
-            ImGui.TextWrapped("1. 本插件均为高危行为，介意勿用。");
-            ImGui.TextWrapped("2. 使用本插件的所必须条件：");
+            ImGui.TextWrapped("使用说明");
+            ImGui.TextWrapped("1. 本插件功能为高危行为，如介意请勿使用；");
+            ImGui.TextWrapped("2. 使用本插件的必须条件：");
             ImGui.TextWrapped("   1）启用 BOCCHI 及其配套插件；");
-            ImGui.TextWrapped("   2）启用 Daily Routines 插件，启用下列模块：");
+            ImGui.TextWrapped("   2）启用 Daily Routines 插件，并启用下列模块：");
             ImGui.TextWrapped("      ① 蜃景幻界新月岛 助手");
             ImGui.TextWrapped("      ② 更好的辅助职业列表");
             ImGui.TextWrapped("      ③ 辅助职业切换指令");
-            ImGui.TextWrapped("   3）启用 XSZToolbox 插件并开启【坐标传送】功能。");
+            ImGui.TextWrapped("      ④ 自动任务出发确认");
+            ImGui.TextWrapped("      ⑤ 即刻退本");
+            ImGui.TextWrapped("      ⑥ 特殊场景探索进入指令");
+            if (ImGui.Button("一键开启上述模块"))
+            {
+                Send("/pdr load OccultCrescentHelper");
+                Send("/pdr load BetterMKDSupportJobList");
+                Send("/pdr load PhantomJobSwitchCommand");
+                Send("/pdr load AutoCommenceDuty");
+                Send("/pdr load InstantLeaveDuty");
+                Send("/pdr load FieldEntryCommand");
+                status = "已发送一键开启 Daily Routines 模块指令";
+            }
         }
         ImGui.Spacing();
         ImGui.Text("选择 BOCCHI 战斗中的辅助职业");
@@ -567,26 +596,31 @@ public sealed class Plugin : IDalamudPlugin
             }
             ImGui.EndCombo();
         }
-        ImGui.TextWrapped("注意：有些辅助职业的辅助技能可能导致与魔寻宝 CD 冲突，不接受因此导致问题的反馈。默认选择的辅助白魔法师应该无此问题。");
+        ImGui.TextWrapped("注意：有些辅助职业的辅助技能可能与魔寻宝 CD 存在冲突，不接受因此所产生问题的反馈。默认选择的辅助白魔法师无此问题");
+        ImGui.TextWrapped("如需自动丢弃跑刀。垃圾，请在这填写DR自动丢弃物品模块的预设名称，留空则不启用");
+        ImGui.SetNextItemWidth(-1);
+        ImGui.InputText("##DiscardPreset", ref discardPreset, 128);
         ImGui.Spacing();
-        ImGui.Text("设置宝箱达到上限后 DR 自动寻宝传送起始点");
-        ImGui.SetNextItemWidth(72);
-        ImGui.InputText("传送 X", ref teleportX, 32);
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(72);
-        ImGui.InputText("传送 Y", ref teleportY, 32);
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(72);
-        ImGui.InputText("传送 Z", ref teleportZ, 32);
         if (silver >= 0 && copper >= 0) ImGui.Text($"宝箱：银 {silver}/{MaxSilver}，铜 {copper}/{MaxCopper}");
         if (!string.IsNullOrEmpty(treasureError)) ImGui.TextColored(new Vector4(1f, 0.3f, 0.3f, 1f), $"错误：{treasureError}");
         if (running)
         {
             if (ImGui.Button("停止脚本")) Stop();
         }
-        else if (ImGui.Button("开始脚本")) Start();
+        else if (ImGui.Button("开始运行")) Start();
         ImGui.SameLine();
         if (ImGui.Button("关闭窗口")) mainWindow.IsOpen = false;
+        ImGui.Spacing();
+        if (ImGui.CollapsingHeader("Debug"))
+        {
+            if (ImGui.Button("直接开始寻宝流程（测试用）"))
+            {
+                if (!running) running = true;
+                silver = MaxSilver;
+                copper = 0;
+                BeginTreasureProcedure();
+            }
+        }
     }
 
     private sealed class MainWindow : Dalamud.Interface.Windowing.Window
