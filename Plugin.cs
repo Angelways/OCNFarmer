@@ -8,6 +8,7 @@ using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
+using Dalamud.Configuration;
 using Dalamud.Plugin.Services;
 using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Client.Game;
@@ -16,7 +17,7 @@ namespace NorthIslandChestPlugin;
 
 public sealed class Plugin : IDalamudPlugin
 {
-    private const string PluginVersion = "1.1.0.0";
+    private const string PluginVersion = "1.2.0.0";
     private static readonly string[] CombatJobs =
     {
         "辅助白魔法师", "辅助武士", "辅助猎人", "辅助武僧", "辅助狂战士",
@@ -48,6 +49,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ICommandManager commands;
     private readonly IFramework framework;
     private readonly IPluginLog log;
+    private readonly PluginConfig config;
     private readonly WindowSystem windows = new("北征宝箱");
     private readonly MainWindow mainWindow;
     private DateTime pendingActionAt = DateTime.MinValue;
@@ -85,12 +87,24 @@ public sealed class Plugin : IDalamudPlugin
         this.commands = commands;
         this.framework = framework;
         this.log = log;
+        config = pluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
+        config.Initialize(pluginInterface);
+        combatJob = CombatJobs.Contains(config.CombatJob, StringComparer.Ordinal) ? config.CombatJob : combatJob;
+        discardPreset = config.DiscardPreset ?? "";
         mainWindow = new MainWindow(this);
         windows.AddWindow(mainWindow);
 
         commands.AddHandler("/ocnchest", new CommandInfo((_, _) => mainWindow.IsOpen = true)
         {
             HelpMessage = "打开 OCNFarmer 设置。",
+        });
+        commands.AddHandler("/ocnstart", new CommandInfo((_, _) => Start())
+        {
+            HelpMessage = "启动 OCNFarmer 自动流程。",
+        });
+        commands.AddHandler("/ocnstop", new CommandInfo((_, _) => Stop("已通过命令停止"))
+        {
+            HelpMessage = "停止 OCNFarmer 自动流程。",
         });
         chat.ChatMessage += OnChatMessage;
         framework.Update += OnUpdate;
@@ -103,6 +117,9 @@ public sealed class Plugin : IDalamudPlugin
         Stop("已停止");
         chat.ChatMessage -= OnChatMessage;
         framework.Update -= OnUpdate;
+        commands.RemoveHandler("/ocnchest");
+        commands.RemoveHandler("/ocnstart");
+        commands.RemoveHandler("/ocnstop");
         windows.RemoveAllWindows();
     }
 
@@ -591,15 +608,24 @@ public sealed class Plugin : IDalamudPlugin
             foreach (var job in CombatJobs)
             {
                 var selected = job == combatJob;
-                if (ImGui.Selectable(job, selected)) combatJob = job;
+                if (ImGui.Selectable(job, selected))
+                {
+                    combatJob = job;
+                    config.CombatJob = combatJob;
+                    config.Save();
+                }
                 if (selected) ImGui.SetItemDefaultFocus();
             }
             ImGui.EndCombo();
         }
         ImGui.TextWrapped("注意：有些辅助职业的辅助技能可能与魔寻宝 CD 存在冲突，不接受因此所产生问题的反馈。默认选择的辅助白魔法师无此问题");
-        ImGui.TextWrapped("如需自动丢弃跑刀。垃圾，请在这填写DR自动丢弃物品模块的预设名称，留空则不启用");
+        ImGui.TextWrapped("如需自动丢弃跑刀垃圾，请在这填写DR自动丢弃物品模块的预设名称，留空则不启用");
         ImGui.SetNextItemWidth(-1);
-        ImGui.InputText("##DiscardPreset", ref discardPreset, 128);
+        if (ImGui.InputText("##DiscardPreset", ref discardPreset, 128))
+        {
+            config.DiscardPreset = discardPreset;
+            config.Save();
+        }
         ImGui.Spacing();
         if (silver >= 0 && copper >= 0) ImGui.Text($"宝箱：银 {silver}/{MaxSilver}，铜 {copper}/{MaxCopper}");
         if (!string.IsNullOrEmpty(treasureError)) ImGui.TextColored(new Vector4(1f, 0.3f, 0.3f, 1f), $"错误：{treasureError}");
@@ -628,5 +654,19 @@ public sealed class Plugin : IDalamudPlugin
         private readonly Plugin plugin;
         public MainWindow(Plugin plugin) : base($"OCNFarmer v{PluginVersion}##OCNFarmer") { this.plugin = plugin; IsOpen = false; }
         public override void Draw() => plugin.DrawStatus();
+    }
+
+    public sealed class PluginConfig : IPluginConfiguration
+    {
+        public int Version { get; set; } = 1;
+        public string CombatJob { get; set; } = "辅助白魔法师";
+        public string DiscardPreset { get; set; } = "";
+
+        [NonSerialized]
+        private IDalamudPluginInterface? pluginInterface;
+
+        public void Initialize(IDalamudPluginInterface pluginInterface) => this.pluginInterface = pluginInterface;
+
+        public void Save() => pluginInterface?.SavePluginConfig(this);
     }
 }
