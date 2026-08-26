@@ -11,7 +11,8 @@ using ObjectKind = Dalamud.Game.ClientState.Objects.Enums.ObjectKind;
 namespace NorthIslandChestPlugin;
 
 /// <summary>
-/// 北岛初始营地自动买终极固定剂。购买前会 /ocnstop，结束后 /ocnstart。
+/// 北岛初始营地自动买终极固定剂。
+/// 购买时用插件内部暂停挂机，不调用 /ocnstop|/ocnstart；用户 /ocnstop 会中止购买。
 /// </summary>
 internal sealed unsafe class FixativeBuyer
 {
@@ -30,7 +31,7 @@ internal sealed unsafe class FixativeBuyer
     private enum Phase
     {
         Idle,
-        StoppingFarmer,
+        PausingFarmer,
         OpenShop,
         SelectDialog,
         SwitchTab,
@@ -38,7 +39,7 @@ internal sealed unsafe class FixativeBuyer
         Confirm,
         Verify,
         Closing,
-        RestartFarmer,
+        ResumingFarmer,
         Done,
     }
 
@@ -47,7 +48,6 @@ internal sealed unsafe class FixativeBuyer
     private readonly IObjectTable objects;
     private readonly IGameGui gameGui;
     private readonly IPluginLog log;
-    private readonly Action<string> send;
 
     private Phase phase = Phase.Idle;
     private DateTime phaseAt = DateTime.MinValue;
@@ -75,8 +75,7 @@ internal sealed unsafe class FixativeBuyer
         IObjectTable objects,
         ICondition condition,
         IGameGui gameGui,
-        IPluginLog log,
-        Action<string> send)
+        IPluginLog log)
     {
         this.plugin = plugin;
         this.clientState = clientState;
@@ -84,7 +83,6 @@ internal sealed unsafe class FixativeBuyer
         _ = condition;
         this.gameGui = gameGui;
         this.log = log;
-        this.send = send;
     }
 
     internal bool TryBegin(bool resumeFarmerAfter)
@@ -113,15 +111,30 @@ internal sealed unsafe class FixativeBuyer
         anySuccess = false;
         buyAttempts = 0;
         startedAt = DateTime.UtcNow;
-        phase = Phase.StoppingFarmer;
+        phase = Phase.PausingFarmer;
         phaseAt = DateTime.UtcNow;
-        status = "购买前停止 OCNFarmer...";
-        log.Information($"开始买固定剂 银={silver} 金={gold}，先 /ocnstop");
+        status = "内部暂停挂机，准备购买...";
+        log.Information($"开始买固定剂 银={silver} 金={gold}（内部暂停，不发 /ocnstop）");
         return true;
+    }
+
+    /// <summary>用户停止：中止购买，不恢复挂机。</summary>
+    internal void Abort()
+    {
+        if (phase is Phase.Idle or Phase.Done)
+            return;
+
+        CloseShop();
+        phase = Phase.Idle;
+        status = "购买已中止";
+        resumeFarmer = false;
+        log.Information("固定剂购买已被 /ocnstop 中止");
+        plugin.OnFixativeBuyAborted();
     }
 
     internal void Reset()
     {
+        CloseShop();
         phase = Phase.Idle;
         status = "空闲";
         resumeFarmer = false;
@@ -148,9 +161,9 @@ internal sealed unsafe class FixativeBuyer
 
         switch (phase)
         {
-            case Phase.StoppingFarmer:
-                send("/ocnstop");
-                status = "已 /ocnstop，准备开店";
+            case Phase.PausingFarmer:
+                plugin.PauseForBuy();
+                status = "已内部暂停挂机，准备开店";
                 phase = Phase.OpenShop;
                 phaseAt = DateTime.UtcNow + TimeSpan.FromMilliseconds(400);
                 return;
@@ -313,11 +326,11 @@ internal sealed unsafe class FixativeBuyer
                     return;
                 }
 
-                phase = Phase.RestartFarmer;
+                phase = Phase.ResumingFarmer;
                 phaseAt = DateTime.UtcNow + TimeSpan.FromMilliseconds(300);
                 return;
 
-            case Phase.RestartFarmer:
+            case Phase.ResumingFarmer:
                 if (DateTime.UtcNow < phaseAt) return;
                 Finish(restart: resumeFarmer);
                 return;
@@ -344,16 +357,13 @@ internal sealed unsafe class FixativeBuyer
     {
         CloseShop();
         phase = Phase.Idle;
-        status = anySuccess ? "购买完成" : "购买未成功";
+        var shouldResume = restart && resumeFarmer;
         resumeFarmer = false;
-        if (restart)
-        {
-            send("/ocnstart");
-            status += "，已 /ocnstart";
-            log.Information("购买结束，已发送 /ocnstart");
-        }
-
-        plugin.OnFixativeBuyFinished(anySuccess);
+        status = anySuccess ? "购买完成" : "购买未成功";
+        if (shouldResume)
+            status += "，内部恢复挂机";
+        log.Information(status);
+        plugin.OnFixativeBuyFinished(anySuccess, shouldResume);
     }
 
     private bool IsAtCamp()

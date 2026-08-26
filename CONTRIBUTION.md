@@ -9,7 +9,9 @@
 - 设置项：**自动购买固定剂**（默认关闭）
 - 可配置白银币 / 白金币阈值（默认 1200 / 1920，与商店单价一致）
 - 仅在初始营地水晶附近（约 60 码）触发
-- 购买前发送 `/ocnstop` 暂停 farmer；购买结束后发送 `/ocnstart` 恢复
+- 购买时**内部暂停**挂机（关 BOCCHI、停寻宝），**不**调用 `/ocnstop` / `/ocnstart`
+- 用户 `/ocnstop` 会中止购买并停止全部自动流程
+- 购买结束后内部恢复挂机（续宝箱检测或重新开 BOCCHI）
 - 触发时机：亚返回后的营地检测流程中（在宝箱扫描前）
 
 ## 变更文件
@@ -17,7 +19,7 @@
 | 文件 | 说明 |
 |------|------|
 | `FixativeBuyer.cs` | **新增** 购买状态机（交互 NPC、切「其他」、下单、确认、校验） |
-| `Plugin.cs` | 接入状态机、UI/配置、`/ocnstop` 软暂停、亚返回后尝试购买 |
+| `Plugin.cs` | 接入状态机、UI/配置、内部暂停/恢复、亚返回后尝试购买；`/ocnstop` 中止购买 |
 | `NorthIslandChestPlugin.csproj` | 版本 1.3.0；描述补充；`DalamudLibPath` 可用 MSBuild 覆盖 |
 | `NorthIslandChestPlugin.json` | 描述补充 |
 | `.gitignore` | 忽略 `bin/` `obj/` 等 |
@@ -76,9 +78,10 @@ dotnet build NorthIslandChestPlugin.csproj -c Release ^
 
 1. 启用「自动购买固定剂」，阈值设为当前背包可触发的值
 2. `/ocnstart` 进入北岛并刷 FT，亚返回到初始营地
-3. 确认：先停 BOCCHI/farmer（`/ocnstop`），完成购买后再 `/ocnstart`
-4. 关闭开关后不再触发购买
-5. 不在营地 / 不在北岛时不应购买
+3. 确认：购买时 BOCCHI/寻宝被内部暂停，买完后自动恢复（日志中无 `/ocnstop`/`/ocnstart`）
+4. 购买进行中执行 `/ocnstop`，确认购买被中止且不会自行恢复挂机
+5. 关闭开关后不再触发购买
+6. 不在营地 / 不在北岛时不应购买
 
 ## PR 说明（可直接粘贴）
 
@@ -86,19 +89,21 @@ dotnet build NorthIslandChestPlugin.csproj -c Release ^
 ## 摘要
 - 新增可选功能：北岛初始营地按背包金银币阈值自动购买终极固定剂
 - 设置中增加「自动购买固定剂」开关及白银/白金阈值（默认关闭）
-- 购买前 `/ocnstop` 暂停自动流程，买完后 `/ocnstart` 恢复，避免与 BOCCHI/寻宝抢控制
+- 购买时内部暂停挂机（关 BOCCHI），结束后内部恢复；不调用 `/ocnstop`/`/ocnstart`
+- 用户 `/ocnstop` 会中止购买并停止全部自动流程
 
 ## 动机
-北岛挂机时金银币容易积压；在返回初始营地时自动兑换固定剂，可减少手动操作，并与现有 `/ocnstart` `/ocnstop` 流程兼容。
+北岛挂机时金银币容易积压；在返回初始营地时自动兑换固定剂，可减少手动操作。购买与挂机同属本插件，暂停应走内部状态，避免用停止命令自打断。
 
 ## 实现要点
 - 新文件 `FixativeBuyer.cs`：营地检测 → 交互古钱鉴定师 → 选择商店对话 → 切「其他」→ 按物品 ID 下单 → 确认 → 校验扣币
-- `Plugin`：亚返回后的营地检测中尝试购买；购买期间对 `/ocnstop` 做软暂停，不打断购买状态机
+- `Plugin.PauseForBuy` / `OnFixativeBuyFinished`：内部暂停与恢复；`Stop`/`/ocnstop` 调用 `FixativeBuyer.Abort`
 - 仅在 Territory 1346 且距起始水晶约 60 码内购买
 
 ## 测试计划
 - [ ] 开关关闭时不购买
 - [ ] 开关开启且币量达阈值、在初始营地时会购买
-- [ ] 购买过程中 farmer 暂停，结束后自动 `/ocnstart`
+- [ ] 购买过程中挂机暂停，结束后内部恢复（无 /ocnstop|/ocnstart）
+- [ ] 购买中执行 /ocnstop 会中止购买且不恢复挂机
 - [ ] 离开北岛或不在营地时不误触发
 ```

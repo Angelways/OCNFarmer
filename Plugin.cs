@@ -79,6 +79,7 @@ public sealed class Plugin : IDalamudPlugin
     private bool waitingForScan;
     private bool initialScan;
     private bool pausedForFixativeBuy;
+    private bool resumeAfterFixativeBuy;
     private int treasureCastAttempts;
     private int silver = -1;
     private int copper = -1;
@@ -110,7 +111,7 @@ public sealed class Plugin : IDalamudPlugin
         config.Initialize(pluginInterface);
         combatJob = CombatJobs.Contains(config.CombatJob, StringComparer.Ordinal) ? config.CombatJob : combatJob;
         discardPreset = config.DiscardPreset ?? "";
-        fixativeBuyer = new FixativeBuyer(this, clientState, objects, condition, gameGui, log, Send);
+        fixativeBuyer = new FixativeBuyer(this, clientState, objects, condition, gameGui, log);
         mainWindow = new MainWindow(this);
         windows.AddWindow(mainWindow);
 
@@ -148,6 +149,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (running || fixativeBuyer.IsBusy) return;
         pausedForFixativeBuy = false;
+        resumeAfterFixativeBuy = false;
         running = true;
         silver = copper = -1;
         initialScan = true;
@@ -164,20 +166,15 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Stop(string message = "已停止")
     {
-        // 买固定剂流程里的 /ocnstop 只暂停 farmer，不打断购买状态机。
-        if (fixativeBuyer.IsBusy && message == "已通过命令停止")
-        {
-            SoftStopForFixativeBuy();
-            return;
-        }
-
+        // /ocnstop 与界面停止：中止购买 + 停止全部挂机。
         if (fixativeBuyer.IsBusy)
-            fixativeBuyer.Reset();
+            fixativeBuyer.Abort();
 
         if (bocchiEnabled) Send("/bocchiillegal off");
         bocchiEnabled = false;
         running = waitingForEntry = waitingForScan = false;
         pausedForFixativeBuy = false;
+        resumeAfterFixativeBuy = false;
         pendingActionAt = pendingScanAt = pendingBocchiAt = pendingReturnScanAt = nextAllowedScanAt = DateTime.MinValue;
         deferredReturnScanAt = DateTime.MinValue;
         treasurePhase = TreasurePhase.None;
@@ -185,8 +182,10 @@ public sealed class Plugin : IDalamudPlugin
         status = message;
     }
 
-    private void SoftStopForFixativeBuy()
+    /// <summary>购买开始时内部暂停挂机（关 BOCCHI、停寻宝），不发 /ocnstop。</summary>
+    internal void PauseForBuy()
     {
+        resumeAfterFixativeBuy = running || pausedForFixativeBuy || resumeAfterFixativeBuy;
         if (bocchiEnabled) Send("/bocchiillegal off");
         bocchiEnabled = false;
         running = false;
@@ -201,18 +200,42 @@ public sealed class Plugin : IDalamudPlugin
         treasurePhase = TreasurePhase.None;
         treasurePhaseAt = DateTime.MinValue;
         status = "已暂停：正在购买固定剂";
+        log.Information("内部暂停挂机以购买固定剂");
     }
 
-    internal void OnFixativeBuyFinished(bool success)
+    internal void OnFixativeBuyAborted()
+    {
+        pausedForFixativeBuy = false;
+        resumeAfterFixativeBuy = false;
+        deferredReturnScanAt = DateTime.MinValue;
+    }
+
+    internal void OnFixativeBuyFinished(bool success, bool resume)
     {
         pausedForFixativeBuy = false;
         status = success ? "固定剂购买完成" : "固定剂购买结束（未成功）";
         log.Information(status);
-        if (deferredReturnScanAt != DateTime.MinValue && running)
+
+        if (!resume && !resumeAfterFixativeBuy)
+        {
+            resumeAfterFixativeBuy = false;
+            return;
+        }
+
+        resumeAfterFixativeBuy = false;
+        running = true;
+        if (deferredReturnScanAt != DateTime.MinValue)
         {
             pendingReturnScanAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
             deferredReturnScanAt = DateTime.MinValue;
+            status = $"{status}，恢复宝箱检测";
+            return;
         }
+
+        // 无待办扫描时切回战斗辅助并开 BOCCHI。
+        ChangeToCombatJob();
+        pendingBocchiAt = DateTime.UtcNow + JobChangeDelay;
+        status = $"{status}，准备恢复挂机";
     }
 
     private bool TryStartFixativeBuy(string reason)
@@ -223,7 +246,7 @@ public sealed class Plugin : IDalamudPlugin
             return false;
 
         lastFixativeTryAt = DateTime.UtcNow;
-        if (!fixativeBuyer.TryBegin(resumeFarmerAfter: running || pausedForFixativeBuy))
+        if (!fixativeBuyer.TryBegin(resumeFarmerAfter: running || pausedForFixativeBuy || resumeAfterFixativeBuy))
             return false;
 
         log.Information($"触发买固定剂：{reason}");
