@@ -5,6 +5,7 @@ using Dalamud.Game.Chat;
 using Dalamud.Game.Command;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
+using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
@@ -17,7 +18,7 @@ namespace NorthIslandChestPlugin;
 
 public sealed class Plugin : IDalamudPlugin
 {
-    private const string PluginVersion = "1.2.0.0";
+    private const string PluginVersion = "1.3.0.0";
     private static readonly string[] CombatJobs =
     {
         "辅助白魔法师", "辅助武士", "辅助猎人", "辅助武僧", "辅助狂战士",
@@ -28,7 +29,7 @@ public sealed class Plugin : IDalamudPlugin
     };
     private const uint TreasureGeneralActionSlot = 32;
     private const ulong GeneralActionTarget = 3758096384UL;
-    private const uint IslandTerritory = 1346;
+    internal const uint IslandTerritory = 1346;
     private const int MaxSilver = 8;
     private const int MaxCopper = 30;
     private const float BaseX = 39f;
@@ -48,16 +49,21 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IObjectTable objects;
     private readonly ICommandManager commands;
     private readonly IFramework framework;
+    private readonly ICondition condition;
+    private readonly IGameGui gameGui;
     private readonly IPluginLog log;
     private readonly PluginConfig config;
     private readonly WindowSystem windows = new("北征宝箱");
     private readonly MainWindow mainWindow;
+    private readonly FixativeBuyer fixativeBuyer;
     private DateTime pendingActionAt = DateTime.MinValue;
     private DateTime pendingScanAt = DateTime.MinValue;
     private DateTime pendingBocchiAt = DateTime.MinValue;
     private DateTime pendingReturnScanAt = DateTime.MinValue;
     private DateTime nextAllowedScanAt = DateTime.MinValue;
     private DateTime treasurePhaseAt = DateTime.MinValue;
+    private DateTime lastFixativeTryAt = DateTime.MinValue;
+    private DateTime deferredReturnScanAt = DateTime.MinValue;
     private TreasurePhase treasurePhase;
     private string combatJob = "辅助白魔法师";
     private string discardPreset = "";
@@ -72,25 +78,39 @@ public sealed class Plugin : IDalamudPlugin
     private bool waitingForEntry;
     private bool waitingForScan;
     private bool initialScan;
+    private bool pausedForFixativeBuy;
     private int treasureCastAttempts;
     private int silver = -1;
     private int copper = -1;
     private string status = "未运行";
 
     public string Name => "OCNFarmer";
+    internal PluginConfig Config => config;
 
-    public Plugin(IChatGui chat, IClientState clientState, IObjectTable objects, IFramework framework, ICommandManager commands, IPluginLog log, IDalamudPluginInterface pluginInterface)
+    public Plugin(
+        IChatGui chat,
+        IClientState clientState,
+        IObjectTable objects,
+        IFramework framework,
+        ICommandManager commands,
+        ICondition condition,
+        IGameGui gameGui,
+        IPluginLog log,
+        IDalamudPluginInterface pluginInterface)
     {
         this.chat = chat;
         this.clientState = clientState;
         this.objects = objects;
         this.commands = commands;
         this.framework = framework;
+        this.condition = condition;
+        this.gameGui = gameGui;
         this.log = log;
         config = pluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
         config.Initialize(pluginInterface);
         combatJob = CombatJobs.Contains(config.CombatJob, StringComparer.Ordinal) ? config.CombatJob : combatJob;
         discardPreset = config.DiscardPreset ?? "";
+        fixativeBuyer = new FixativeBuyer(this, clientState, objects, condition, gameGui, log, Send);
         mainWindow = new MainWindow(this);
         windows.AddWindow(mainWindow);
 
@@ -114,6 +134,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        fixativeBuyer.Reset();
         Stop("已停止");
         chat.ChatMessage -= OnChatMessage;
         framework.Update -= OnUpdate;
@@ -125,7 +146,8 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Start()
     {
-        if (running) return;
+        if (running || fixativeBuyer.IsBusy) return;
+        pausedForFixativeBuy = false;
         running = true;
         silver = copper = -1;
         initialScan = true;
@@ -142,13 +164,71 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Stop(string message = "已停止")
     {
+        // 买固定剂流程里的 /ocnstop 只暂停 farmer，不打断购买状态机。
+        if (fixativeBuyer.IsBusy && message == "已通过命令停止")
+        {
+            SoftStopForFixativeBuy();
+            return;
+        }
+
+        if (fixativeBuyer.IsBusy)
+            fixativeBuyer.Reset();
+
         if (bocchiEnabled) Send("/bocchiillegal off");
         bocchiEnabled = false;
         running = waitingForEntry = waitingForScan = false;
+        pausedForFixativeBuy = false;
         pendingActionAt = pendingScanAt = pendingBocchiAt = pendingReturnScanAt = nextAllowedScanAt = DateTime.MinValue;
+        deferredReturnScanAt = DateTime.MinValue;
         treasurePhase = TreasurePhase.None;
         treasurePhaseAt = DateTime.MinValue;
         status = message;
+    }
+
+    private void SoftStopForFixativeBuy()
+    {
+        if (bocchiEnabled) Send("/bocchiillegal off");
+        bocchiEnabled = false;
+        running = false;
+        pausedForFixativeBuy = true;
+        waitingForEntry = waitingForScan = false;
+        pendingActionAt = pendingScanAt = pendingBocchiAt = DateTime.MinValue;
+        if (pendingReturnScanAt != DateTime.MinValue)
+        {
+            deferredReturnScanAt = pendingReturnScanAt;
+            pendingReturnScanAt = DateTime.MinValue;
+        }
+        treasurePhase = TreasurePhase.None;
+        treasurePhaseAt = DateTime.MinValue;
+        status = "已暂停：正在购买固定剂";
+    }
+
+    internal void OnFixativeBuyFinished(bool success)
+    {
+        pausedForFixativeBuy = false;
+        status = success ? "固定剂购买完成" : "固定剂购买结束（未成功）";
+        log.Information(status);
+        if (deferredReturnScanAt != DateTime.MinValue && running)
+        {
+            pendingReturnScanAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+            deferredReturnScanAt = DateTime.MinValue;
+        }
+    }
+
+    private bool TryStartFixativeBuy(string reason)
+    {
+        if (!config.EnableFixativeBuy || fixativeBuyer.IsBusy)
+            return false;
+        if (DateTime.UtcNow - lastFixativeTryAt < TimeSpan.FromSeconds(20))
+            return false;
+
+        lastFixativeTryAt = DateTime.UtcNow;
+        if (!fixativeBuyer.TryBegin(resumeFarmerAfter: running || pausedForFixativeBuy))
+            return false;
+
+        log.Information($"触发买固定剂：{reason}");
+        status = fixativeBuyer.Status;
+        return true;
     }
 
     private void BeginIsland()
@@ -160,6 +240,14 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnUpdate(IFramework framework)
     {
+        if (fixativeBuyer.IsBusy)
+        {
+            fixativeBuyer.Update();
+            if (fixativeBuyer.IsBusy)
+                status = fixativeBuyer.Status;
+            return;
+        }
+
         if (!running) return;
         if (treasurePhase != TreasurePhase.None)
         {
@@ -198,6 +286,13 @@ public sealed class Plugin : IDalamudPlugin
         }
         if (pendingReturnScanAt != DateTime.MinValue && DateTime.UtcNow >= pendingReturnScanAt)
         {
+            if (TryStartFixativeBuy("亚返回后营地检测"))
+            {
+                deferredReturnScanAt = DateTime.UtcNow;
+                pendingReturnScanAt = DateTime.MinValue;
+                return;
+            }
+
             pendingReturnScanAt = DateTime.MinValue;
             if (!waitingForScan) ScanTreasures();
         }
@@ -626,6 +721,35 @@ public sealed class Plugin : IDalamudPlugin
             config.DiscardPreset = discardPreset;
             config.Save();
         }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Text("固定剂");
+        var enableFixative = config.EnableFixativeBuy;
+        if (ImGui.Checkbox("自动购买固定剂", ref enableFixative))
+        {
+            config.EnableFixativeBuy = enableFixative;
+            config.Save();
+        }
+        ImGui.BeginDisabled(!config.EnableFixativeBuy);
+        ImGui.SetNextItemWidth(160f);
+        var silverThreshold = config.SilverThreshold;
+        if (ImGui.InputInt("白银币阈值", ref silverThreshold))
+        {
+            config.SilverThreshold = Math.Max(0, silverThreshold);
+            config.Save();
+        }
+        ImGui.SetNextItemWidth(160f);
+        var goldThreshold = config.GoldThreshold;
+        if (ImGui.InputInt("白金币阈值", ref goldThreshold))
+        {
+            config.GoldThreshold = Math.Max(0, goldThreshold);
+            config.Save();
+        }
+        ImGui.EndDisabled();
+        if (fixativeBuyer.IsBusy)
+            ImGui.TextColored(new Vector4(0.95f, 0.8f, 0.2f, 1f), $"购买中：{fixativeBuyer.Status}");
+
         ImGui.Spacing();
         if (silver >= 0 && copper >= 0) ImGui.Text($"宝箱：银 {silver}/{MaxSilver}，铜 {copper}/{MaxCopper}");
         if (!string.IsNullOrEmpty(treasureError)) ImGui.TextColored(new Vector4(1f, 0.3f, 0.3f, 1f), $"错误：{treasureError}");
@@ -646,6 +770,8 @@ public sealed class Plugin : IDalamudPlugin
                 copper = 0;
                 BeginTreasureProcedure();
             }
+            if (ImGui.Button("立即尝试买固定剂"))
+                TryStartFixativeBuy("手动测试");
         }
     }
 
@@ -658,9 +784,13 @@ public sealed class Plugin : IDalamudPlugin
 
     public sealed class PluginConfig : IPluginConfiguration
     {
-        public int Version { get; set; } = 1;
+        public int Version { get; set; } = 2;
         public string CombatJob { get; set; } = "辅助白魔法师";
         public string DiscardPreset { get; set; } = "";
+        public bool EnableFixativeBuy { get; set; } = false;
+        public int SilverThreshold { get; set; } = 1200;
+        public int GoldThreshold { get; set; } = 1920;
+        public int MaxBottlesPerTrip { get; set; } = 20;
 
         [NonSerialized]
         private IDalamudPluginInterface? pluginInterface;
