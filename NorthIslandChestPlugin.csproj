@@ -6,15 +6,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <PlatformTarget>x64</PlatformTarget>
     <Platforms>x64</Platforms>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Author>Angelways</Author>
     <Name>OCNFarmer</Name>
     <Punchline>监听系统消息并自动管理蜃景幻界新月岛 北征之章 FT 与宝箱上限。</Punchline>
-    <Description>蜃景幻界新月岛 北征之章自动寻宝。启动命令：/ocnstart；停止命令：/ocnstop</Description>
+    <Description>蜃景幻界新月岛 北征之章自动寻宝。启动命令：/ocnstart；停止命令：/ocnstop。可选自动购买固定剂。</Description>
     <RepoUrl>https://github.com/Angelways/OCNFarmer</RepoUrl>
     <Tags>Occult Crescent;宝箱;中文</Tags>
-    <DalamudLibPath>D:\XIVLauncherCN\addon\Hooks\dev</DalamudLibPath>
+    <DalamudLibPath Condition="'$(DalamudLibPath)' == ''">D:\XIVLauncherCN\addon\Hooks\dev</DalamudLibPath>
     <Use_Dalamud_FFXIVClientStructs>true</Use_Dalamud_FFXIVClientStructs>
     <Use_Dalamud_Lumina>false</Use_Dalamud_Lumina>
     <Use_Dalamud_Lumina_Excel>false</Use_Dalamud_Lumina_Excel>
