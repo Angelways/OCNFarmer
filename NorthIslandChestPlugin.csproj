@@ -10,8 +10,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Author>Angelways</Author>
     <Name>OCNFarmer</Name>
-    <Punchline>自动管理蜃景幻界新月岛 北征之章 FT、宝箱、寻宝与钱币购买。</Punchline>
-    <Description>蜃景幻界新月岛 北征之章自动寻宝与钱币购买。启动命令：/ocnstart；停止命令：/ocnstop</Description>
+    <Punchline>自动管理蜃景幻界新月岛北征之章寻宝与钱币购买。</Punchline>
+    <Description>蜃景幻界新月岛 北征之章全自动寻宝，全自动钱币购买（By Gugu）。启动命令：/ocnstart；停止命令：/ocnstop</Description>
     <RepoUrl>https://github.com/Angelways/OCNFarmer</RepoUrl>
     <Tags>Occult Crescent;宝箱;中文</Tags>
     <DalamudLibPath>D:\XIVLauncherCN\addon\Hooks\dev</DalamudLibPath>
