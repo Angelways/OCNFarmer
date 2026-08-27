@@ -14,7 +14,9 @@
     <Description>蜃景幻界新月岛 北征之章全自动寻宝，全自动钱币购买（By Gugu）。启动命令：/ocnstart；停止命令：/ocnstop</Description>
     <RepoUrl>https://github.com/Angelways/OCNFarmer</RepoUrl>
     <Tags>Occult Crescent;宝箱;中文</Tags>
-    <DalamudLibPath>D:\XIVLauncherCN\addon\Hooks\dev</DalamudLibPath>
+    <DalamudLibPath Condition="'$(DalamudLibPath)' == ''">$(APPDATA)\XIVLauncherCN\addon\Hooks\dev</DalamudLibPath>
+    <OmenToolsPath Condition="'$(OmenToolsPath)' == ''">$(MSBuildThisFileDirectory)lib\</OmenToolsPath>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <Use_Dalamud_FFXIVClientStructs>true</Use_Dalamud_FFXIVClientStructs>
     <Use_Dalamud_Lumina>false</Use_Dalamud_Lumina>
     <Use_Dalamud_Lumina_Excel>false</Use_Dalamud_Lumina_Excel>
@@ -22,13 +24,19 @@
     <Use_Dalamud_Serilog>false</Use_Dalamud_Serilog>
     <Use_Dalamud_MSObjectPool>false</Use_Dalamud_MSObjectPool>
   </PropertyGroup>
+
   <ItemGroup>
     <Reference Remove="FFXIVClientStructs" />
     <Compile Remove="_dalamud\**" />
     <None Remove="_dalamud\**" />
     <EmbeddedResource Remove="_dalamud\**" />
   </ItemGroup>
+
   <ItemGroup>
+    <Reference Include="OmenTools">
+      <HintPath>$(OmenToolsPath)OmenTools.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
     <Reference Include="FFXIVClientStructs" HintPath="$(DalamudLibPath)\FFXIVClientStructs.dll" Private="false" />
     <Reference Update="Dalamud"><HintPath>$(DalamudLibPath)\Dalamud.dll</HintPath></Reference>
     <Reference Update="Dalamud.Bindings.ImGui"><HintPath>$(DalamudLibPath)\Dalamud.Bindings.ImGui.dll</HintPath></Reference>
@@ -37,5 +45,13 @@
     <Reference Update="InteropGenerator.Runtime"><HintPath>$(DalamudLibPath)\InteropGenerator.Runtime.dll</HintPath></Reference>
     <Reference Update="Lumina"><HintPath>$(DalamudLibPath)\Lumina.dll</HintPath></Reference>
     <Reference Update="Lumina.Excel"><HintPath>$(DalamudLibPath)\Lumina.Excel.dll</HintPath></Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="NorthIslandChestPlugin.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(OmenToolsPath)GuerrillaNtp.dll" Condition="Exists('$(OmenToolsPath)GuerrillaNtp.dll')"
+          Link="GuerrillaNtp.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="$(OmenToolsPath)TinyPinyin.dll" Condition="Exists('$(OmenToolsPath)TinyPinyin.dll')"
+          Link="TinyPinyin.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
 </Project>

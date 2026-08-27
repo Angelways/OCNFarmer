@@ -13,6 +13,7 @@ using Dalamud.Configuration;
 using Dalamud.Plugin.Services;
 using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using OmenTools;
 
 namespace NorthIslandChestPlugin;
 
@@ -43,6 +44,9 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan SubsequentScanInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan JobChangeDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan ReturnScanDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan CurrencyPurchaseDelay = TimeSpan.FromSeconds(5);
+    private static readonly Vector3 InitialCrystal = new(882f, 258.5f, 882f);
+    private const float InitialCrystalRadius = 15f;
     private static readonly TimeSpan TreasureCommandDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan LeaveDutyDelay = TimeSpan.FromSeconds(5);
 
@@ -65,6 +69,7 @@ public sealed class Plugin : IDalamudPlugin
     private DateTime pendingBocchiAt = DateTime.MinValue;
     private DateTime pendingReturnScanAt = DateTime.MinValue;
     private DateTime pendingCurrencyCheckAt = DateTime.MinValue;
+    private DateTime pendingPurchaseAt = DateTime.MinValue;
     private DateTime nextAllowedScanAt = DateTime.MinValue;
     private DateTime treasurePhaseAt = DateTime.MinValue;
     private TreasurePhase treasurePhase;
@@ -91,7 +96,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public string Name => "OCNFarmer";
 
-    public Plugin(IChatGui chat, IClientState clientState, IObjectTable objects, IFramework framework, ICommandManager commands, ICondition condition, IGameGui gameGui, IPluginLog log, IDalamudPluginInterface pluginInterface)
+    public Plugin(IChatGui chat, IClientState clientState, IObjectTable objects, IFramework framework, ICommandManager commands, ICondition condition, IGameGui gameGui, IPluginLog log, IAddonLifecycle addonLifecycle, IDalamudPluginInterface pluginInterface)
     {
         this.chat = chat;
         this.clientState = clientState;
@@ -101,12 +106,13 @@ public sealed class Plugin : IDalamudPlugin
         this.condition = condition;
         this.gameGui = gameGui;
         this.log = log;
+        DService.Init(pluginInterface);
         config = pluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
         config.Initialize(pluginInterface);
         combatJob = CombatJobs.Contains(config.CombatJob, StringComparer.Ordinal) ? config.CombatJob : combatJob;
         discardPreset = config.DiscardPreset ?? "";
         NormalizePurchaseConfig();
-        currencyBuyer = new CurrencyBuyer(clientState, objects, condition, gameGui, log, Send, OnCurrencyPurchaseFinished);
+        currencyBuyer = new CurrencyBuyer(clientState, objects, condition, gameGui, addonLifecycle, log, OnCurrencyPurchaseFinished);
         mainWindow = new MainWindow(this);
         windows.AddWindow(mainWindow);
 
@@ -130,7 +136,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
-        currencyBuyer.Cancel();
+        currencyBuyer.Dispose();
         Stop("已停止");
         chat.ChatMessage -= OnChatMessage;
         framework.Update -= OnUpdate;
@@ -138,6 +144,7 @@ public sealed class Plugin : IDalamudPlugin
         commands.RemoveHandler("/ocnstart");
         commands.RemoveHandler("/ocnstop");
         windows.RemoveAllWindows();
+        DService.Uninit();
     }
 
     public void Start()
@@ -163,7 +170,7 @@ public sealed class Plugin : IDalamudPlugin
         if (bocchiEnabled) Send("/bocchiillegal off");
         bocchiEnabled = false;
         running = waitingForEntry = waitingForScan = false;
-        pendingActionAt = pendingScanAt = pendingBocchiAt = pendingReturnScanAt = pendingCurrencyCheckAt = nextAllowedScanAt = DateTime.MinValue;
+        pendingActionAt = pendingScanAt = pendingBocchiAt = pendingReturnScanAt = pendingCurrencyCheckAt = pendingPurchaseAt = nextAllowedScanAt = DateTime.MinValue;
         treasurePhase = TreasurePhase.None;
         treasurePhaseAt = DateTime.MinValue;
         status = message;
@@ -207,6 +214,11 @@ public sealed class Plugin : IDalamudPlugin
         {
             pendingCurrencyCheckAt = DateTime.MinValue;
             UpdateCurrencyCounts();
+            pendingPurchaseAt = DateTime.UtcNow + CurrencyPurchaseDelay;
+        }
+        if (pendingPurchaseAt != DateTime.MinValue && DateTime.UtcNow >= pendingPurchaseAt)
+        {
+            pendingPurchaseAt = DateTime.MinValue;
             if (TryBeginCurrencyPurchase()) return;
         }
         if (pendingReturnScanAt != DateTime.MinValue && DateTime.UtcNow >= pendingReturnScanAt)
@@ -597,6 +609,17 @@ public sealed class Plugin : IDalamudPlugin
         log.Information($"亚返回后钱币检测：白银币 {silverCurrency}/{CurrencyCap}，白金币 {goldCurrency}/{CurrencyCap}");
     }
 
+    private bool IsNearInitialCrystal()
+    {
+        var player = objects.LocalPlayer;
+        if (player == null)
+            return false;
+
+        var dx = player.Position.X - InitialCrystal.X;
+        var dz = player.Position.Z - InitialCrystal.Z;
+        return dx * dx + dz * dz <= InitialCrystalRadius * InitialCrystalRadius;
+    }
+
     private unsafe int GetInventoryCount(uint itemId)
     {
         try
@@ -614,17 +637,33 @@ public sealed class Plugin : IDalamudPlugin
 
     private bool TryBeginCurrencyPurchase()
     {
+        if (condition[ConditionFlag.BetweenAreas] || condition[ConditionFlag.BetweenAreas51])
+            return false;
+        if (condition[ConditionFlag.InCombat] ||
+            condition[ConditionFlag.OccupiedInEvent] ||
+            condition[ConditionFlag.OccupiedInQuestEvent] ||
+            condition[ConditionFlag.Occupied33] ||
+            condition[ConditionFlag.Occupied30])
+            return false;
+
         var requests = new List<CurrencyPurchaseRequest>();
         AddCurrencyPurchaseRequest(requests, CurrencyKind.Silver, silverCurrency, config.SilverPurchaseMode, config.SilverTriggerAmount);
         AddCurrencyPurchaseRequest(requests, CurrencyKind.Gold, goldCurrency, config.GoldPurchaseMode, config.GoldTriggerAmount);
         if (requests.Count == 0) return false;
-        if (!currencyBuyer.Begin(requests)) return false;
+        if (!IsNearInitialCrystal())
+        {
+            status = "亚返回后尚未到达初始魔路水晶，跳过本次自动购买";
+            log.Information(status);
+            return false;
+        }
 
         if (bocchiEnabled) Send("/bocchiillegal off");
         bocchiEnabled = false;
         Send("/vnav stop");
+
+        if (!currencyBuyer.Begin(requests)) return false;
         waitingForEntry = waitingForScan = false;
-        pendingActionAt = pendingScanAt = pendingBocchiAt = pendingReturnScanAt = pendingCurrencyCheckAt = DateTime.MinValue;
+        pendingActionAt = pendingScanAt = pendingBocchiAt = pendingReturnScanAt = pendingCurrencyCheckAt = pendingPurchaseAt = DateTime.MinValue;
         treasurePhase = TreasurePhase.None;
         treasurePhaseAt = DateTime.MinValue;
         status = currencyBuyer.Status;
