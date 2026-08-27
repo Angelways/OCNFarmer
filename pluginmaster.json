@@ -3,13 +3,12 @@
     "Author": "Angelways",
     "Name": "OCNFarmer",
     "InternalName": "NorthIslandChestPlugin",
-    "AssemblyVersion": "1.2.0.0",
-    "Description": "蜃景幻界新月岛 北征之章自动寻宝。启动命令：/ocnstart；停止命令：/ocnstop",
-    "IconUrl": "https://raw.githubusercontent.com/Angelways/OCNFarmer/main/icon.png",
+    "AssemblyVersion": "1.3.0.0",
+    "Description": "蜃景幻界新月岛 北征之章自动寻宝与钱币购买。启动命令：/ocnstart；停止命令：/ocnstop",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
-    "DownloadLinkInstall": "https://github.com/Angelways/OCNFarmer/releases/download/v1.2.0.0/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/Angelways/OCNFarmer/releases/download/v1.2.0.0/latest.zip",
-    "Changelog": "新增 /ocnstart 与 /ocnstop 命令并修正自动丢弃提示"
+    "DownloadLinkInstall": "https://github.com/Angelways/OCNFarmer/releases/download/v1.3.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Angelways/OCNFarmer/releases/download/v1.3.0/latest.zip",
+    "Changelog": "新增白银币与白金币独立配置的自动购买钱箱和终极固定剂功能"
   }
 ]

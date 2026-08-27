@@ -6,12 +6,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <PlatformTarget>x64</PlatformTarget>
     <Platforms>x64</Platforms>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Author>Angelways</Author>
     <Name>OCNFarmer</Name>
-    <Punchline>监听系统消息并自动管理蜃景幻界新月岛 北征之章 FT 与宝箱上限。</Punchline>
-    <Description>蜃景幻界新月岛 北征之章自动寻宝。启动命令：/ocnstart；停止命令：/ocnstop</Description>
+    <Punchline>自动管理蜃景幻界新月岛 北征之章 FT、宝箱、寻宝与钱币购买。</Punchline>
+    <Description>蜃景幻界新月岛 北征之章自动寻宝与钱币购买。启动命令：/ocnstart；停止命令：/ocnstop</Description>
     <RepoUrl>https://github.com/Angelways/OCNFarmer</RepoUrl>
     <Tags>Occult Crescent;宝箱;中文</Tags>
     <DalamudLibPath>D:\XIVLauncherCN\addon\Hooks\dev</DalamudLibPath>
