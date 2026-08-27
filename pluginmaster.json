@@ -8,8 +8,8 @@
     "IconUrl": "https://raw.githubusercontent.com/Angelways/OCNFarmer/main/icon.png",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
-    "DownloadLinkInstall": "https://github.com/Angelways/OCNFarmer/releases/download/v1.3.0/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/Angelways/OCNFarmer/releases/download/v1.3.0/latest.zip",
+    "DownloadLinkInstall": "https://github.com/Angelways/OCNFarmer/releases/download/v1.3.0.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Angelways/OCNFarmer/releases/download/v1.3.0.0/latest.zip",
     "Changelog": "新增白银币与白金币独立配置的自动购买钱箱和终极固定剂功能"
   }
 ]
