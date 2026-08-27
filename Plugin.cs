@@ -29,7 +29,9 @@ public sealed class Plugin : IDalamudPlugin
     };
     private const uint TreasureGeneralActionSlot = 32;
     private const ulong GeneralActionTarget = 3758096384UL;
-    internal const uint IslandTerritory = 1346;
+    internal const uint NorthIslandTerritory = 1346;
+    internal const uint SouthIslandTerritory = 1252;
+    internal const uint IslandTerritory = NorthIslandTerritory;
     private const int MaxSilver = 8;
     private const int MaxCopper = 30;
     private const float BaseX = 39f;
@@ -55,14 +57,14 @@ public sealed class Plugin : IDalamudPlugin
     private readonly PluginConfig config;
     private readonly WindowSystem windows = new("北征宝箱");
     private readonly MainWindow mainWindow;
-    private readonly FixativeBuyer fixativeBuyer;
+    private readonly CurrencyExchangeBuyer currencyExchangeBuyer;
     private DateTime pendingActionAt = DateTime.MinValue;
     private DateTime pendingScanAt = DateTime.MinValue;
     private DateTime pendingBocchiAt = DateTime.MinValue;
     private DateTime pendingReturnScanAt = DateTime.MinValue;
     private DateTime nextAllowedScanAt = DateTime.MinValue;
     private DateTime treasurePhaseAt = DateTime.MinValue;
-    private DateTime lastFixativeTryAt = DateTime.MinValue;
+    private DateTime lastExchangeTryAt = DateTime.MinValue;
     private DateTime deferredReturnScanAt = DateTime.MinValue;
     private TreasurePhase treasurePhase;
     private string combatJob = "辅助白魔法师";
@@ -78,8 +80,8 @@ public sealed class Plugin : IDalamudPlugin
     private bool waitingForEntry;
     private bool waitingForScan;
     private bool initialScan;
-    private bool pausedForFixativeBuy;
-    private bool resumeAfterFixativeBuy;
+    private bool pausedForCurrencyExchange;
+    private bool resumeAfterCurrencyExchange;
     private int treasureCastAttempts;
     private int silver = -1;
     private int copper = -1;
@@ -97,6 +99,8 @@ public sealed class Plugin : IDalamudPlugin
         ICondition condition,
         IGameGui gameGui,
         IPluginLog log,
+        ISigScanner sigScanner,
+        IAddonLifecycle addonLifecycle,
         IDalamudPluginInterface pluginInterface)
     {
         this.chat = chat;
@@ -107,11 +111,12 @@ public sealed class Plugin : IDalamudPlugin
         this.condition = condition;
         this.gameGui = gameGui;
         this.log = log;
+        ShopEventPackets.Initialize(sigScanner, log);
         config = pluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
         config.Initialize(pluginInterface);
         combatJob = CombatJobs.Contains(config.CombatJob, StringComparer.Ordinal) ? config.CombatJob : combatJob;
         discardPreset = config.DiscardPreset ?? "";
-        fixativeBuyer = new FixativeBuyer(this, clientState, objects, condition, gameGui, log);
+        currencyExchangeBuyer = new CurrencyExchangeBuyer(this, clientState, objects, condition, gameGui, addonLifecycle, log);
         mainWindow = new MainWindow(this);
         windows.AddWindow(mainWindow);
 
@@ -135,7 +140,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
-        fixativeBuyer.Reset();
+        currencyExchangeBuyer.Dispose();
         Stop("已停止");
         chat.ChatMessage -= OnChatMessage;
         framework.Update -= OnUpdate;
@@ -147,9 +152,9 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Start()
     {
-        if (running || fixativeBuyer.IsBusy) return;
-        pausedForFixativeBuy = false;
-        resumeAfterFixativeBuy = false;
+        if (running || currencyExchangeBuyer.IsBusy) return;
+        pausedForCurrencyExchange = false;
+        resumeAfterCurrencyExchange = false;
         running = true;
         silver = copper = -1;
         initialScan = true;
@@ -167,14 +172,14 @@ public sealed class Plugin : IDalamudPlugin
     public void Stop(string message = "已停止")
     {
         // /ocnstop 与界面停止：中止购买 + 停止全部挂机。
-        if (fixativeBuyer.IsBusy)
-            fixativeBuyer.Abort();
+        if (currencyExchangeBuyer.IsBusy)
+            currencyExchangeBuyer.Abort();
 
         if (bocchiEnabled) Send("/bocchiillegal off");
         bocchiEnabled = false;
         running = waitingForEntry = waitingForScan = false;
-        pausedForFixativeBuy = false;
-        resumeAfterFixativeBuy = false;
+        pausedForCurrencyExchange = false;
+        resumeAfterCurrencyExchange = false;
         pendingActionAt = pendingScanAt = pendingBocchiAt = pendingReturnScanAt = nextAllowedScanAt = DateTime.MinValue;
         deferredReturnScanAt = DateTime.MinValue;
         treasurePhase = TreasurePhase.None;
@@ -182,14 +187,14 @@ public sealed class Plugin : IDalamudPlugin
         status = message;
     }
 
-    /// <summary>购买开始时内部暂停挂机（关 BOCCHI、停寻宝），不发 /ocnstop。</summary>
+    /// <summary>兑换开始时内部暂停挂机（关 BOCCHI、停寻宝），不发 /ocnstop。</summary>
     internal void PauseForBuy()
     {
-        resumeAfterFixativeBuy = running || pausedForFixativeBuy || resumeAfterFixativeBuy;
+        resumeAfterCurrencyExchange = running || pausedForCurrencyExchange || resumeAfterCurrencyExchange;
         if (bocchiEnabled) Send("/bocchiillegal off");
         bocchiEnabled = false;
         running = false;
-        pausedForFixativeBuy = true;
+        pausedForCurrencyExchange = true;
         waitingForEntry = waitingForScan = false;
         pendingActionAt = pendingScanAt = pendingBocchiAt = DateTime.MinValue;
         if (pendingReturnScanAt != DateTime.MinValue)
@@ -199,30 +204,30 @@ public sealed class Plugin : IDalamudPlugin
         }
         treasurePhase = TreasurePhase.None;
         treasurePhaseAt = DateTime.MinValue;
-        status = "已暂停：正在购买固定剂";
-        log.Information("内部暂停挂机以购买固定剂");
+        status = "已暂停：正在货币兑换";
+        log.Information("内部暂停挂机以进行货币兑换");
     }
 
-    internal void OnFixativeBuyAborted()
+    internal void OnCurrencyExchangeAborted()
     {
-        pausedForFixativeBuy = false;
-        resumeAfterFixativeBuy = false;
+        pausedForCurrencyExchange = false;
+        resumeAfterCurrencyExchange = false;
         deferredReturnScanAt = DateTime.MinValue;
     }
 
-    internal void OnFixativeBuyFinished(bool success, bool resume)
+    internal void OnCurrencyExchangeFinished(bool success, bool resume)
     {
-        pausedForFixativeBuy = false;
-        status = success ? "固定剂购买完成" : "固定剂购买结束（未成功）";
+        pausedForCurrencyExchange = false;
+        status = success ? "货币兑换完成" : "货币兑换结束（未成功）";
         log.Information(status);
 
-        if (!resume && !resumeAfterFixativeBuy)
+        if (!resume && !resumeAfterCurrencyExchange)
         {
-            resumeAfterFixativeBuy = false;
+            resumeAfterCurrencyExchange = false;
             return;
         }
 
-        resumeAfterFixativeBuy = false;
+        resumeAfterCurrencyExchange = false;
         running = true;
         if (deferredReturnScanAt != DateTime.MinValue)
         {
@@ -232,25 +237,26 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        // 无待办扫描时切回战斗辅助并开 BOCCHI。
         ChangeToCombatJob();
         pendingBocchiAt = DateTime.UtcNow + JobChangeDelay;
         status = $"{status}，准备恢复挂机";
     }
 
-    private bool TryStartFixativeBuy(string reason)
+    private bool TryStartCurrencyExchange(string reason, bool stackCapMode = false)
     {
-        if (!config.EnableFixativeBuy || fixativeBuyer.IsBusy)
+        if (!config.EnableCurrencyExchange || currencyExchangeBuyer.IsBusy)
             return false;
-        if (DateTime.UtcNow - lastFixativeTryAt < TimeSpan.FromSeconds(20))
-            return false;
-
-        lastFixativeTryAt = DateTime.UtcNow;
-        if (!fixativeBuyer.TryBegin(resumeFarmerAfter: running || pausedForFixativeBuy || resumeAfterFixativeBuy))
+        if (DateTime.UtcNow - lastExchangeTryAt < TimeSpan.FromSeconds(20))
             return false;
 
-        log.Information($"触发买固定剂：{reason}");
-        status = fixativeBuyer.Status;
+        lastExchangeTryAt = DateTime.UtcNow;
+        if (!currencyExchangeBuyer.TryBegin(
+                resumeFarmerAfter: running || pausedForCurrencyExchange || resumeAfterCurrencyExchange,
+                stackCapMode: stackCapMode))
+            return false;
+
+        log.Information($"触发货币兑换：{reason}");
+        status = currencyExchangeBuyer.Status;
         return true;
     }
 
@@ -263,11 +269,11 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnUpdate(IFramework framework)
     {
-        if (fixativeBuyer.IsBusy)
+        if (currencyExchangeBuyer.IsBusy)
         {
-            fixativeBuyer.Update();
-            if (fixativeBuyer.IsBusy)
-                status = fixativeBuyer.Status;
+            currencyExchangeBuyer.Update();
+            if (currencyExchangeBuyer.IsBusy)
+                status = currencyExchangeBuyer.Status;
             return;
         }
 
@@ -309,7 +315,8 @@ public sealed class Plugin : IDalamudPlugin
         }
         if (pendingReturnScanAt != DateTime.MinValue && DateTime.UtcNow >= pendingReturnScanAt)
         {
-            if (TryStartFixativeBuy("亚返回后营地检测"))
+            if (config.ExchangeTrigger == ExchangeTrigger.ThresholdOnReturn &&
+                TryStartCurrencyExchange("亚返回后营地检测"))
             {
                 deferredReturnScanAt = DateTime.UtcNow;
                 pendingReturnScanAt = DateTime.MinValue;
@@ -545,6 +552,13 @@ public sealed class Plugin : IDalamudPlugin
                 status = "正在移动至小水晶区域，等待 10 秒...";
                 return;
             case TreasurePhase.FirstCrystal:
+                if (config.EnableCurrencyExchange &&
+                    config.ExchangeTrigger == ExchangeTrigger.StackCapAtCrystal &&
+                    TryStartCurrencyExchange("初始水晶满额", stackCapMode: true))
+                {
+                    treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+                    return;
+                }
                 BeginCrystalWait(true);
                 return;
             case TreasurePhase.SecondMove:
@@ -554,6 +568,13 @@ public sealed class Plugin : IDalamudPlugin
                 status = "正在移动至小水晶区域，等待 10 秒...";
                 return;
             case TreasurePhase.SecondCrystal:
+                if (config.EnableCurrencyExchange &&
+                    config.ExchangeTrigger == ExchangeTrigger.StackCapAtCrystal &&
+                    TryStartCurrencyExchange("初始水晶满额", stackCapMode: true))
+                {
+                    treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+                    return;
+                }
                 BeginCrystalWait(false);
                 return;
             case TreasurePhase.FirstWaitPlayers:
@@ -693,7 +714,7 @@ public sealed class Plugin : IDalamudPlugin
     public void DrawStatus()
     {
         ImGui.Text($"状态：{status}");
-        ImGui.Text($"当前区域 ID：{clientState.TerritoryType}（目标 1346）");
+        ImGui.Text($"当前区域 ID：{clientState.TerritoryType}（北征 1346 / 南征 1252 可兑换）");
         ImGui.Spacing();
         if (ImGui.CollapsingHeader("使用说明"))
         {
@@ -747,31 +768,68 @@ public sealed class Plugin : IDalamudPlugin
 
         ImGui.Spacing();
         ImGui.Separator();
-        ImGui.Text("固定剂");
-        var enableFixative = config.EnableFixativeBuy;
-        if (ImGui.Checkbox("自动购买固定剂", ref enableFixative))
+        ImGui.Text("货币兑换");
+        var enableExchange = config.EnableCurrencyExchange;
+        if (ImGui.Checkbox("启用自动货币兑换", ref enableExchange))
         {
-            config.EnableFixativeBuy = enableFixative;
+            config.EnableCurrencyExchange = enableExchange;
             config.Save();
         }
-        ImGui.BeginDisabled(!config.EnableFixativeBuy);
-        ImGui.SetNextItemWidth(160f);
-        var silverThreshold = config.SilverThreshold;
-        if (ImGui.InputInt("白银币阈值", ref silverThreshold))
+
+        ImGui.BeginDisabled(!config.EnableCurrencyExchange);
+        if (ImGui.RadioButton("终极固定剂（仅北征 1346）", config.ExchangeReward == ExchangeReward.UltimateFixative))
         {
-            config.SilverThreshold = Math.Max(0, silverThreshold);
+            config.ExchangeReward = ExchangeReward.UltimateFixative;
             config.Save();
         }
-        ImGui.SetNextItemWidth(160f);
-        var goldThreshold = config.GoldThreshold;
-        if (ImGui.InputInt("白金币阈值", ref goldThreshold))
+        if (ImGui.RadioButton("古旧的钱箱（南征 1252 / 北征 1346）", config.ExchangeReward == ExchangeReward.OldCoffer))
         {
-            config.GoldThreshold = Math.Max(0, goldThreshold);
+            config.ExchangeReward = ExchangeReward.OldCoffer;
+            config.Save();
+        }
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted("触发方式");
+        if (ImGui.RadioButton("返回初始水晶且达到阈值", config.ExchangeTrigger == ExchangeTrigger.ThresholdOnReturn))
+        {
+            config.ExchangeTrigger = ExchangeTrigger.ThresholdOnReturn;
+            config.Save();
+        }
+        if (ImGui.RadioButton("在初始水晶且货币满 9999", config.ExchangeTrigger == ExchangeTrigger.StackCapAtCrystal))
+        {
+            config.ExchangeTrigger = ExchangeTrigger.StackCapAtCrystal;
+            config.Save();
+        }
+
+        if (config.ExchangeTrigger == ExchangeTrigger.ThresholdOnReturn)
+        {
+            ImGui.SetNextItemWidth(160f);
+            var silverThreshold = config.SilverThreshold;
+            if (ImGui.InputInt("白银/银币阈值", ref silverThreshold))
+            {
+                config.SilverThreshold = Math.Max(0, silverThreshold);
+                config.Save();
+            }
+            ImGui.SetNextItemWidth(160f);
+            var goldThreshold = config.GoldThreshold;
+            if (ImGui.InputInt("白金/金币阈值", ref goldThreshold))
+            {
+                config.GoldThreshold = Math.Max(0, goldThreshold);
+                config.Save();
+            }
+        }
+
+        ImGui.SetNextItemWidth(160f);
+        var maxPerTrip = config.MaxExchangesPerTrip;
+        if (ImGui.InputInt("每次最多兑换数量", ref maxPerTrip))
+        {
+            config.MaxExchangesPerTrip = Math.Max(1, maxPerTrip);
             config.Save();
         }
         ImGui.EndDisabled();
-        if (fixativeBuyer.IsBusy)
-            ImGui.TextColored(new Vector4(0.95f, 0.8f, 0.2f, 1f), $"购买中：{fixativeBuyer.Status}");
+
+        if (currencyExchangeBuyer.IsBusy)
+            ImGui.TextColored(new Vector4(0.95f, 0.8f, 0.2f, 1f), $"兑换中：{currencyExchangeBuyer.Status}");
 
         ImGui.Spacing();
         if (silver >= 0 && copper >= 0) ImGui.Text($"宝箱：银 {silver}/{MaxSilver}，铜 {copper}/{MaxCopper}");
@@ -793,8 +851,8 @@ public sealed class Plugin : IDalamudPlugin
                 copper = 0;
                 BeginTreasureProcedure();
             }
-            if (ImGui.Button("立即尝试买固定剂"))
-                TryStartFixativeBuy("手动测试");
+            if (ImGui.Button("立即尝试货币兑换"))
+                TryStartCurrencyExchange("手动测试");
         }
     }
 
@@ -807,18 +865,45 @@ public sealed class Plugin : IDalamudPlugin
 
     public sealed class PluginConfig : IPluginConfiguration
     {
-        public int Version { get; set; } = 2;
+        public int Version { get; set; } = 3;
         public string CombatJob { get; set; } = "辅助白魔法师";
         public string DiscardPreset { get; set; } = "";
+
+        // 兼容旧配置字段
         public bool EnableFixativeBuy { get; set; } = false;
+
+        public bool EnableCurrencyExchange { get; set; } = false;
+        public ExchangeReward ExchangeReward { get; set; } = ExchangeReward.UltimateFixative;
+        public ExchangeTrigger ExchangeTrigger { get; set; } = ExchangeTrigger.ThresholdOnReturn;
         public int SilverThreshold { get; set; } = 1200;
         public int GoldThreshold { get; set; } = 1920;
-        public int MaxBottlesPerTrip { get; set; } = 20;
+        public int MaxExchangesPerTrip { get; set; } = 20;
+
+        // 兼容旧字段名
+        public int MaxBottlesPerTrip
+        {
+            get => MaxExchangesPerTrip;
+            set => MaxExchangesPerTrip = value;
+        }
 
         [NonSerialized]
         private IDalamudPluginInterface? pluginInterface;
 
-        public void Initialize(IDalamudPluginInterface pluginInterface) => this.pluginInterface = pluginInterface;
+        public void Initialize(IDalamudPluginInterface pluginInterface)
+        {
+            this.pluginInterface = pluginInterface;
+            MigrateLegacyConfig();
+        }
+
+        private void MigrateLegacyConfig()
+        {
+            if (EnableCurrencyExchange || !EnableFixativeBuy)
+                return;
+
+            EnableCurrencyExchange = true;
+            ExchangeReward = ExchangeReward.UltimateFixative;
+            ExchangeTrigger = ExchangeTrigger.ThresholdOnReturn;
+        }
 
         public void Save() => pluginInterface?.SavePluginConfig(this);
     }

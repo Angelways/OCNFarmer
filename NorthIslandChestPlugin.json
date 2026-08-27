@@ -2,7 +2,7 @@
   "Author": "Angelways",
   "Name": "OCNFarmer",
   "Punchline": "自动管理蜃景幻界新月岛 北征之章 FT、宝箱与寻宝流程。",
-  "Description": "蜃景幻界新月岛 北征之章自动寻宝。启动命令：/ocnstart；停止命令：/ocnstop。可选自动购买固定剂（内部暂停挂机，/ocnstop 可中止购买）。",
+  "Description": "蜃景幻界新月岛 北征之章自动寻宝。启动命令：/ocnstart；停止命令：/ocnstop。可选远程货币兑换（固定剂/古旧钱箱，Keita 同款无 UI 流程）。",
   "IconUrl": "https://raw.githubusercontent.com/Angelways/OCNFarmer/main/assets/icon.png",
   "ApplicableVersion": "any",
   "RepoUrl": "https://github.com/Angelways/OCNFarmer",

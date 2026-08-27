@@ -11,7 +11,7 @@
     <Author>Angelways</Author>
     <Name>OCNFarmer</Name>
     <Punchline>监听系统消息并自动管理蜃景幻界新月岛 北征之章 FT 与宝箱上限。</Punchline>
-    <Description>蜃景幻界新月岛 北征之章自动寻宝。启动命令：/ocnstart；停止命令：/ocnstop。可选自动购买固定剂。</Description>
+    <Description>蜃景幻界新月岛 北征之章自动寻宝。启动命令：/ocnstart；停止命令：/ocnstop。可选远程货币兑换（固定剂/古旧钱箱）。</Description>
     <RepoUrl>https://github.com/Angelways/OCNFarmer</RepoUrl>
     <Tags>Occult Crescent;宝箱;中文</Tags>
     <DalamudLibPath Condition="'$(DalamudLibPath)' == ''">D:\XIVLauncherCN\addon\Hooks\dev</DalamudLibPath>
