@@ -3,13 +3,13 @@
     "Author": "Angelways",
     "Name": "OCNFarmer",
     "InternalName": "NorthIslandChestPlugin",
-    "AssemblyVersion": "1.3.0.0",
+    "AssemblyVersion": "1.4.0.0",
     "Description": "蜃景幻界新月岛 北征之章全自动寻宝，全自动钱币购买（By Gugu）。启动命令：/ocnstart；停止命令：/ocnstop",
-    "IconUrl": "https://raw.githubusercontent.com/Angelways/OCNFarmer/main/icon.png",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
-    "DownloadLinkInstall": "https://github.com/Angelways/OCNFarmer/releases/download/v1.3.0.0/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/Angelways/OCNFarmer/releases/download/v1.3.0.0/latest.zip",
-    "Changelog": "新增白银币与白金币独立配置的自动购买钱箱和终极固定剂功能"
+    "IconUrl": "https://raw.githubusercontent.com/Angelways/OCNFarmer/main/icon.png",
+    "DownloadLinkInstall": "https://github.com/Angelways/OCNFarmer/releases/download/v1.4.0.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Angelways/OCNFarmer/releases/download/v1.4.0.0/latest.zip",
+    "Changelog": "铜宝箱达到 28 或 29 个时，下一次亚返回后绕过间隔立即复检宝箱"
   }
 ]

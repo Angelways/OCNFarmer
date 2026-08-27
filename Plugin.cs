@@ -18,7 +18,7 @@ namespace NorthIslandChestPlugin;
 
 public sealed class Plugin : IDalamudPlugin
 {
-    private const string PluginVersion = "1.3.0.0";
+    private const string PluginVersion = "1.4.0.0";
     private static readonly string[] CombatJobs =
     {
         "辅助白魔法师", "辅助武士", "辅助猎人", "辅助武僧", "辅助狂战士",
@@ -366,9 +366,13 @@ public sealed class Plugin : IDalamudPlugin
             log.Information($"检测到本角色 {localPlayerName} 的亚返回完成消息，将在 5 秒后检测钱币，并按间隔决定是否检测宝箱");
             if (pendingCurrencyCheckAt == DateTime.MinValue)
                 pendingCurrencyCheckAt = DateTime.UtcNow + ReturnScanDelay;
-            if (!waitingForScan && pendingReturnScanAt == DateTime.MinValue && DateTime.UtcNow >= nextAllowedScanAt)
+            var nearCopperCap = copper is 28 or 29;
+            if (!waitingForScan && pendingReturnScanAt == DateTime.MinValue &&
+                (nearCopperCap || DateTime.UtcNow >= nextAllowedScanAt))
             {
                 pendingReturnScanAt = DateTime.UtcNow + ReturnScanDelay;
+                if (nearCopperCap)
+                    log.Information($"当前铜宝箱为 {copper}/30，绕过 10 分钟间隔，将在本次亚返回后复检宝箱");
             }
             else if (DateTime.UtcNow < nextAllowedScanAt)
             {
