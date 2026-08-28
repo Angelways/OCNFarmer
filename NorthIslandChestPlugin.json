@@ -1,8 +1,8 @@
 {
   "Author": "Angelways",
   "Name": "OCNFarmer",
-  "Punchline": "自动管理蜃景幻界新月岛北征之章寻宝与钱币购买。",
-  "Description": "蜃景幻界新月岛 北征之章全自动寻宝，全自动钱币购买（By Gugu）。启动命令：/ocnstart；停止命令：/ocnstop",
+  "Punchline": "自动管理蜃景幻界新月岛南征/北征之章寻宝与钱币购买。",
+  "Description": "蜃景幻界新月岛 南征/北征之章全自动寻宝与钱币购买。启动命令：/ocnstart；停止命令：/ocnstop",
   "ApplicableVersion": "any",
   "RepoUrl": "https://github.com/Angelways/OCNFarmer",
   "Tags": ["Occult Crescent", "宝箱", "中文"],

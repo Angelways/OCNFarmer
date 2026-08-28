@@ -14,12 +14,21 @@ using Dalamud.Plugin.Services;
 using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using OmenTools;
+using OmenTools.OmenService;
 
 namespace NorthIslandChestPlugin;
 
+public enum PartyRole
+{
+    Off,
+    Captain,
+    Member,
+    Auto,
+}
+
 public sealed class Plugin : IDalamudPlugin
 {
-    private const string PluginVersion = "1.4.0.0";
+    private const string PluginVersion = "1.4.1.0";
     private static readonly string[] CombatJobs =
     {
         "辅助白魔法师", "辅助武士", "辅助猎人", "辅助武僧", "辅助狂战士",
@@ -30,27 +39,30 @@ public sealed class Plugin : IDalamudPlugin
     };
     private const uint TreasureGeneralActionSlot = 32;
     private const ulong GeneralActionTarget = 3758096384UL;
-    internal const uint IslandTerritory = 1346;
+    internal const uint IslandTerritory = IslandProfile.NorthTerritoryId;
     private const int CurrencyCap = 9999;
-    private const uint SilverCurrencyItemId = 51975;
-    private const uint GoldCurrencyItemId = 51976;
     private const uint UltimateFixativeItemId = 51978;
     private const uint OldCofferItemId = 47740;
     private const int MaxSilver = 8;
     private const int MaxCopper = 30;
-    private const float BaseX = 39f;
-    private const float BaseZ = 39f;
-    private const float BaseRadius = 18f;
     private static readonly TimeSpan SubsequentScanInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan JobChangeDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan ReturnScanDelay = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan CurrencyPurchaseDelay = TimeSpan.FromSeconds(5);
-    private static readonly Vector3 InitialCrystal = new(882f, 258.5f, 882f);
     private const float InitialCrystalRadius = 15f;
     private static readonly TimeSpan TreasureCommandDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan LeaveDutyDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan PartySyncTimeout = TimeSpan.FromSeconds(90);
+    private const string PartySignalLeave = "OCN:LEAVE";
+    private const string PartySignalOut = "OCN:OUT";
+    private const string PartySignalEnter = "OCN:ENTER";
 
-    private enum TreasurePhase { None, FirstMove, FirstCrystal, FirstWaitPlayers, InnerMount, InnerStart, InnerReturn, SecondMove, SecondCrystal, SecondWaitPlayers, OuterMount, OuterStart, OuterReturn, LeaveDuty, Reentry }
+    private enum TreasurePhase
+    {
+        None, FirstMove, FirstCrystal, FirstWaitPlayers, InnerMount, InnerStart, InnerReturn,
+        SecondMove, SecondCrystal, SecondWaitPlayers, OuterMount, OuterStart, OuterReturn,
+        LeaveDuty, Reentry, PartyInIslandLoop, WaitingForPartyExit, WaitingForCaptainEntry,
+    }
 
     private readonly IChatGui chat;
     private readonly IClientState clientState;
@@ -59,6 +71,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IFramework framework;
     private readonly ICondition condition;
     private readonly IGameGui gameGui;
+    private readonly IPartyList partyList;
     private readonly IPluginLog log;
     private readonly PluginConfig config;
     private readonly CurrencyBuyer currencyBuyer;
@@ -79,7 +92,7 @@ public sealed class Plugin : IDalamudPlugin
     private DateTime nextPlayerCheckAt = DateTime.MinValue;
     private string currentCrystal = "";
     private bool innerLeg;
-    private static readonly string[] Crystals = { "妖火", "城塞", "圣堂", "遗迹", "街道" };
+    private IslandProfile activeProfile = IslandProfile.North;
     private string treasureError = "";
     private bool running;
     private bool bocchiEnabled;
@@ -93,10 +106,14 @@ public sealed class Plugin : IDalamudPlugin
     private int goldCurrency = -1;
     private string currencyPurchaseStatus = "";
     private string status = "未运行";
+    private readonly HashSet<string> partyOutAcks = new(StringComparer.Ordinal);
+    private bool partyOutSent;
+    private bool captainEnterReceived;
+    private DateTime partySyncStartedAt = DateTime.MinValue;
 
     public string Name => "OCNFarmer";
 
-    public Plugin(IChatGui chat, IClientState clientState, IObjectTable objects, IFramework framework, ICommandManager commands, ICondition condition, IGameGui gameGui, IPluginLog log, IAddonLifecycle addonLifecycle, IDalamudPluginInterface pluginInterface)
+    public Plugin(IChatGui chat, IClientState clientState, IObjectTable objects, IFramework framework, ICommandManager commands, ICondition condition, IGameGui gameGui, IPartyList partyList, IPluginLog log, IAddonLifecycle addonLifecycle, IDalamudPluginInterface pluginInterface)
     {
         this.chat = chat;
         this.clientState = clientState;
@@ -105,6 +122,7 @@ public sealed class Plugin : IDalamudPlugin
         this.framework = framework;
         this.condition = condition;
         this.gameGui = gameGui;
+        this.partyList = partyList;
         this.log = log;
         DService.Init(pluginInterface);
         config = pluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
@@ -112,6 +130,7 @@ public sealed class Plugin : IDalamudPlugin
         combatJob = CombatJobs.Contains(config.CombatJob, StringComparer.Ordinal) ? config.CombatJob : combatJob;
         discardPreset = config.DiscardPreset ?? "";
         NormalizePurchaseConfig();
+        activeProfile = ResolveProfile();
         currencyBuyer = new CurrencyBuyer(clientState, objects, condition, gameGui, addonLifecycle, log, OnCurrencyPurchaseFinished);
         mainWindow = new MainWindow(this);
         windows.AddWindow(mainWindow);
@@ -153,12 +172,13 @@ public sealed class Plugin : IDalamudPlugin
         running = true;
         silver = copper = -1;
         initialScan = true;
+        activeProfile = ResolveProfile();
         if (!IsIsland())
         {
-            Send("/pdrfe ocn");
+            Send(activeProfile.EntryCommand);
             waitingForEntry = true;
             pendingActionAt = DateTime.MinValue;
-            status = "正在进入蜃景幻界新月岛 北征之章...";
+            status = $"正在进入{activeProfile.ChapterName}...";
             return;
         }
         RequestFreelancerScan("副本内首次");
@@ -173,6 +193,7 @@ public sealed class Plugin : IDalamudPlugin
         pendingActionAt = pendingScanAt = pendingBocchiAt = pendingReturnScanAt = pendingCurrencyCheckAt = pendingPurchaseAt = nextAllowedScanAt = DateTime.MinValue;
         treasurePhase = TreasurePhase.None;
         treasurePhaseAt = DateTime.MinValue;
+        ResetPartySyncState();
         status = message;
     }
 
@@ -185,6 +206,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
         if (!running) return;
+        activeProfile = ResolveProfile();
         if (treasurePhase != TreasurePhase.None)
         {
             UpdateTreasureProcedure();
@@ -194,7 +216,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             if (bocchiEnabled) Send("/bocchiillegal off");
             bocchiEnabled = false;
-            status = "当前未在蜃景幻界新月岛 北征之章中，等待重新进入...";
+            status = $"当前未在{activeProfile.ChapterName}中，等待重新进入...";
             return;
         }
         // 从副本外进入时只接受品级同步聊天消息，不使用时间兜底判断。
@@ -340,15 +362,23 @@ public sealed class Plugin : IDalamudPlugin
 
         if (!running) return;
 
+        if (message.LogKind == XivChatType.Party)
+            HandlePartySyncChat(message, text);
+
         // 该系统消息比 TerritoryType 更能说明副本已经完成加载。
         if (text.Contains("当前任务设有品级同步限制", StringComparison.Ordinal))
         {
-            log.Information("检测到蜃景幻界新月岛 北征之章品级同步系统消息，开始准备首次宝箱检测");
+            log.Information($"检测到{activeProfile.ChapterName}品级同步系统消息，开始准备首次宝箱检测");
             if (waitingForEntry)
             {
                 waitingForEntry = false;
                 pendingActionAt = DateTime.UtcNow + JobChangeDelay;
                 status = "已确认进入副本，正在切换自由人...";
+                if (IsPartyCaptain())
+                {
+                    SendPartySignal(PartySignalEnter);
+                    log.Information("队长已重新进岛，已广播 OCN:ENTER");
+                }
             }
         }
 
@@ -367,9 +397,22 @@ public sealed class Plugin : IDalamudPlugin
         }
         if (ownReturnCompleted && treasurePhase == TreasurePhase.OuterReturn)
         {
-            treasurePhase = TreasurePhase.LeaveDuty;
             treasurePhaseAt = DateTime.UtcNow + ReturnScanDelay;
-            status = "外环寻宝完成，本角色亚返回已完成，5 秒后退出副本...";
+            if (ShouldUseHangFriendSync())
+            {
+                treasurePhase = TreasurePhase.LeaveDuty;
+                status = "外环寻宝完成，5 秒后退出副本并等待挂友组队同步...";
+            }
+            else if (ShouldUseInIslandPartyLoop())
+            {
+                treasurePhase = TreasurePhase.PartyInIslandLoop;
+                status = "外环寻宝完成，5 秒后不退岛，重新开始组队循环...";
+            }
+            else
+            {
+                treasurePhase = TreasurePhase.LeaveDuty;
+                status = "外环寻宝完成，本角色亚返回已完成，5 秒后退出副本...";
+            }
             log.Information("检测到寻宝外环的本角色亚返回完成消息");
             return;
         }
@@ -451,7 +494,7 @@ public sealed class Plugin : IDalamudPlugin
             case TreasurePhase.FirstMove:
                 Send("/bocchiillegal off");
                 bocchiEnabled = false;
-                Send("/vnav moveto 882 258.5 882");
+                Send(MoveToCrystalCommand());
                 treasurePhase = TreasurePhase.FirstCrystal;
                 treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(12);
                 status = "正在移动至小水晶区域，等待 12 秒...";
@@ -460,7 +503,7 @@ public sealed class Plugin : IDalamudPlugin
                 BeginCrystalWait(true);
                 return;
             case TreasurePhase.SecondMove:
-                Send("/vnav moveto 882 258.5 882");
+                Send(MoveToCrystalCommand());
                 treasurePhase = TreasurePhase.SecondCrystal;
                 treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(12);
                 status = "正在移动至小水晶区域，等待 12 秒...";
@@ -496,26 +539,44 @@ public sealed class Plugin : IDalamudPlugin
                 return;
             case TreasurePhase.LeaveDuty:
                 Send("/pdr leaveduty");
-                treasurePhase = TreasurePhase.Reentry;
-                treasurePhaseAt = DateTime.UtcNow + LeaveDutyDelay;
-                status = "正在退出副本，5 秒后重新开始循环...";
-                break;
-            case TreasurePhase.Reentry:
-                treasurePhase = TreasurePhase.None;
-                treasurePhaseAt = DateTime.MinValue;
-                silver = copper = -1;
-                initialScan = true;
-                if (!IsIsland())
+                if (ShouldUseHangFriendSync())
                 {
-                    Send("/pdrfe ocn");
-                    waitingForEntry = true;
-                    pendingActionAt = DateTime.MinValue;
-                    status = "寻宝完成，正在重新进入蜃景幻界新月岛 北征之章...";
+                    if (LocalPlayerState.IsPartyLeader)
+                    {
+                        SendPartySignal(PartySignalLeave);
+                        ResetPartySyncState();
+                        partySyncStartedAt = DateTime.UtcNow;
+                        treasurePhase = TreasurePhase.WaitingForPartyExit;
+                        status = "队长：已发送退岛指令，等待所有队员退出...";
+                        log.Information("队长退岛：已广播 OCN:LEAVE，等待队员 OCN:OUT");
+                    }
+                    else
+                    {
+                        ResetPartySyncState();
+                        partySyncStartedAt = DateTime.UtcNow;
+                        treasurePhase = TreasurePhase.WaitingForCaptainEntry;
+                        status = "队员：已发送退岛指令，等待队长重新进本...";
+                        log.Information("队员退岛：等待队长 OCN:ENTER");
+                    }
                 }
                 else
                 {
-                    RequestFreelancerScan("新循环");
+                    treasurePhase = TreasurePhase.Reentry;
+                    treasurePhaseAt = DateTime.UtcNow + LeaveDutyDelay;
+                    status = "正在退出副本，5 秒后重新开始循环...";
                 }
+                break;
+            case TreasurePhase.PartyInIslandLoop:
+                CompletePartyTreasureProcedure();
+                break;
+            case TreasurePhase.Reentry:
+                BeginSoloReentryCycle();
+                break;
+            case TreasurePhase.WaitingForPartyExit:
+                UpdateWaitingForPartyExit();
+                break;
+            case TreasurePhase.WaitingForCaptainEntry:
+                UpdateWaitingForCaptainEntry();
                 break;
         }
 
@@ -524,7 +585,7 @@ public sealed class Plugin : IDalamudPlugin
     private void BeginCrystalWait(bool firstLeg)
     {
         innerLeg = firstLeg;
-        currentCrystal = Crystals[Random.Shared.Next(Crystals.Length)];
+        currentCrystal = activeProfile.ShardKeywords[Random.Shared.Next(activeProfile.ShardKeywords.Length)];
         Send($"/pdr ptp {currentCrystal}");
         treasurePhase = firstLeg ? TreasurePhase.FirstWaitPlayers : TreasurePhase.SecondWaitPlayers;
         treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(2);
@@ -542,7 +603,7 @@ public sealed class Plugin : IDalamudPlugin
             status = "等待周围玩家中...";
             if (DateTime.UtcNow - playerWaitStartedAt > TimeSpan.FromSeconds(15))
             {
-                var alternatives = Crystals.Where(x => x != currentCrystal).ToArray();
+                var alternatives = activeProfile.ShardKeywords.Where(x => x != currentCrystal).ToArray();
                 currentCrystal = alternatives[Random.Shared.Next(alternatives.Length)];
                 Send($"/pdr ptp {currentCrystal}");
                 playerWaitStartedAt = DateTime.UtcNow + TimeSpan.FromSeconds(2);
@@ -566,6 +627,168 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    private bool IsInParty() => LocalPlayerState.IsInAnyParty;
+
+    private bool ShouldUseHangFriendSync() =>
+        config.PartySyncEnabled && config.HangFriendParty && IsInParty();
+
+    private bool ShouldUseInIslandPartyLoop() =>
+        config.PartySyncEnabled && !config.HangFriendParty && IsInParty();
+
+    private bool IsPartyCaptain() =>
+        ShouldUseHangFriendSync() && LocalPlayerState.IsPartyLeader;
+
+    private bool IsPartyMember() =>
+        ShouldUseHangFriendSync() && !LocalPlayerState.IsPartyLeader;
+
+    private int GetPartyMemberCount() => Math.Max(partyList.Length, IsInParty() ? 1 : 0);
+
+    private void ResetPartySyncState()
+    {
+        partyOutAcks.Clear();
+        partyOutSent = false;
+        captainEnterReceived = false;
+        partySyncStartedAt = DateTime.MinValue;
+    }
+
+    private void SendPartySignal(string signal) => Send($"/p {signal}");
+
+    private void HandlePartySyncChat(IHandleableChatMessage message, string text)
+    {
+        if (!ShouldUseHangFriendSync()) return;
+
+        var sender = message.Sender?.TextValue ?? "";
+        var localName = objects.LocalPlayer?.Name.TextValue ?? "";
+        if (string.IsNullOrWhiteSpace(sender) || sender == localName) return;
+
+        if (text.Contains(PartySignalOut, StringComparison.Ordinal) && IsPartyCaptain())
+        {
+            if (partyOutAcks.Add(sender))
+                log.Information($"队长收到队员退岛确认：{sender}（{partyOutAcks.Count}/{ExpectedPartyOutCount()}）");
+            return;
+        }
+
+        if (text.Contains(PartySignalEnter, StringComparison.Ordinal) && IsPartyMember())
+        {
+            captainEnterReceived = true;
+            log.Information("队员收到队长进岛信号 OCN:ENTER");
+            return;
+        }
+
+        if (!text.Contains(PartySignalLeave, StringComparison.Ordinal) || !IsPartyMember()) return;
+        if (!IsIsland()) return;
+        if (treasurePhase is TreasurePhase.LeaveDuty or TreasurePhase.WaitingForCaptainEntry or TreasurePhase.WaitingForPartyExit)
+            return;
+
+        log.Information("队员收到队长退岛信号 OCN:LEAVE，跟随退岛");
+        Send("/pdr leaveduty");
+        ResetPartySyncState();
+        partySyncStartedAt = DateTime.UtcNow;
+        treasurePhase = TreasurePhase.WaitingForCaptainEntry;
+        status = "队员：收到队长退岛信号，正在退出并等待队长重新进本...";
+    }
+
+    private int ExpectedPartyOutCount() => Math.Max(0, partyList.Length - 1);
+
+    private void UpdateWaitingForPartyExit()
+    {
+        if (IsIsland())
+        {
+            status = "队长：等待退岛完成...";
+            return;
+        }
+
+        var expected = ExpectedPartyOutCount();
+        var timedOut = partySyncStartedAt != DateTime.MinValue && DateTime.UtcNow - partySyncStartedAt > PartySyncTimeout;
+        if (expected == 0 || partyOutAcks.Count >= expected || timedOut)
+        {
+            if (timedOut && partyOutAcks.Count < expected)
+                log.Warning($"队长等待队员退岛超时（{partyOutAcks.Count}/{expected}），仍将重新进本");
+            BeginPartyReentry("队长");
+            return;
+        }
+
+        status = $"队长：已退岛，等待队员确认（{partyOutAcks.Count}/{expected}）...";
+    }
+
+    private void UpdateWaitingForCaptainEntry()
+    {
+        if (IsIsland())
+        {
+            status = "队员：等待退岛完成...";
+            return;
+        }
+
+        if (!partyOutSent)
+        {
+            SendPartySignal(PartySignalOut);
+            partyOutSent = true;
+            log.Information("队员已退岛，已广播 OCN:OUT");
+        }
+
+        if (captainEnterReceived)
+        {
+            BeginPartyReentry("队员");
+            return;
+        }
+
+        status = "队员：已退岛，等待队长重新进本（OCN:ENTER）...";
+    }
+
+    private void BeginSoloReentryCycle()
+    {
+        treasurePhase = TreasurePhase.None;
+        treasurePhaseAt = DateTime.MinValue;
+        silver = copper = -1;
+        initialScan = true;
+        if (!IsIsland())
+        {
+            Send(activeProfile.EntryCommand);
+            waitingForEntry = true;
+            pendingActionAt = DateTime.MinValue;
+            status = $"寻宝完成，正在重新进入{activeProfile.ChapterName}...";
+        }
+        else
+        {
+            RequestFreelancerScan("新循环");
+        }
+    }
+
+    private void CompletePartyTreasureProcedure()
+    {
+        treasurePhase = TreasurePhase.None;
+        treasurePhaseAt = DateTime.MinValue;
+
+        if (!ShouldUseInIslandPartyLoop())
+        {
+            log.Information("组队同步已启用但小队已解散，恢复退岛流程");
+            treasurePhase = TreasurePhase.LeaveDuty;
+            treasurePhaseAt = DateTime.UtcNow + ReturnScanDelay;
+            status = "小队已解散，5 秒后退出副本...";
+            return;
+        }
+
+        silver = copper = -1;
+        initialScan = true;
+        log.Information($"组队岛内循环：外环寻宝完成，开始新循环（成员数 {GetPartyMemberCount()}）");
+        status = "组队模式：外环完成，不退岛，正在重新开始宝箱检测...";
+        RequestFreelancerScan("组队新循环");
+    }
+
+    private void BeginPartyReentry(string roleLabel)
+    {
+        treasurePhase = TreasurePhase.None;
+        treasurePhaseAt = DateTime.MinValue;
+        silver = copper = -1;
+        initialScan = true;
+        ResetPartySyncState();
+        Send(activeProfile.EntryCommand);
+        waitingForEntry = true;
+        pendingActionAt = DateTime.MinValue;
+        status = $"{roleLabel}：组队同步完成，正在重新进入{activeProfile.ChapterName}...";
+        log.Information($"{roleLabel}组队同步完成，发送进岛指令");
+    }
+
     private bool HasNearbyPlayer(float radius)
     {
         var local = objects.LocalPlayer;
@@ -578,16 +801,15 @@ public sealed class Plugin : IDalamudPlugin
         return false;
     }
 
-    private bool IsIsland() => clientState.TerritoryType == IslandTerritory;
+    private bool IsIsland() => clientState.TerritoryType == activeProfile.TerritoryId;
 
-    private bool NearBase()
+    private IslandProfile ResolveProfile() =>
+        IslandProfile.Resolve(config.IslandTarget, clientState.TerritoryType);
+
+    private string MoveToCrystalCommand()
     {
-        var player = objects.LocalPlayer;
-        if (player == null) return false;
-        var p = player.Position;
-        var dx = p.X - BaseX;
-        var dz = p.Z - BaseZ;
-        return dx * dx + dz * dz <= BaseRadius * BaseRadius;
+        var crystal = activeProfile.InitialCrystal;
+        return $"/vnav moveto {crystal.X.ToString(CultureInfo.InvariantCulture)} {crystal.Y.ToString(CultureInfo.InvariantCulture)} {crystal.Z.ToString(CultureInfo.InvariantCulture)}";
     }
 
     private void Send(string command)
@@ -604,9 +826,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private unsafe void UpdateCurrencyCounts()
     {
-        silverCurrency = GetInventoryCount(SilverCurrencyItemId);
-        goldCurrency = GetInventoryCount(GoldCurrencyItemId);
-        log.Information($"亚返回后钱币检测：白银币 {silverCurrency}/{CurrencyCap}，白金币 {goldCurrency}/{CurrencyCap}");
+        silverCurrency = GetInventoryCount(activeProfile.SilverCurrencyItemId);
+        goldCurrency = GetInventoryCount(activeProfile.GoldCurrencyItemId);
+        log.Information($"亚返回后钱币检测：{activeProfile.SilverCurrencyName} {silverCurrency}/{CurrencyCap}，{activeProfile.GoldCurrencyName} {goldCurrency}/{CurrencyCap}");
     }
 
     private bool IsNearInitialCrystal()
@@ -615,8 +837,9 @@ public sealed class Plugin : IDalamudPlugin
         if (player == null)
             return false;
 
-        var dx = player.Position.X - InitialCrystal.X;
-        var dz = player.Position.Z - InitialCrystal.Z;
+        var crystal = activeProfile.InitialCrystal;
+        var dx = player.Position.X - crystal.X;
+        var dz = player.Position.Z - crystal.Z;
         return dx * dx + dz * dz <= InitialCrystalRadius * InitialCrystalRadius;
     }
 
@@ -661,7 +884,7 @@ public sealed class Plugin : IDalamudPlugin
         bocchiEnabled = false;
         Send("/vnav stop");
 
-        if (!currencyBuyer.Begin(requests)) return false;
+        if (!currencyBuyer.Begin(requests, activeProfile)) return false;
         waitingForEntry = waitingForScan = false;
         pendingActionAt = pendingScanAt = pendingBocchiAt = pendingReturnScanAt = pendingCurrencyCheckAt = pendingPurchaseAt = DateTime.MinValue;
         treasurePhase = TreasurePhase.None;
@@ -680,6 +903,7 @@ public sealed class Plugin : IDalamudPlugin
         int triggerAmount)
     {
         if (mode == CurrencyPurchaseMode.None || currentAmount < triggerAmount) return;
+        if (mode == CurrencyPurchaseMode.UltimateFixative && !activeProfile.SupportsFixative) return;
         var cost = GetPurchaseCost(kind, mode);
         var configuredQuantity = GetConfiguredQuantity(kind, mode);
         var quantity = Math.Min(configuredQuantity, currentAmount / cost);
@@ -688,9 +912,9 @@ public sealed class Plugin : IDalamudPlugin
         var isSilver = kind == CurrencyKind.Silver;
         requests.Add(new CurrencyPurchaseRequest(
             kind,
-            isSilver ? "十二城邦白银币" : "十二城邦白金币",
-            isSilver ? SilverCurrencyItemId : GoldCurrencyItemId,
-            isSilver ? 0x1B0614u : 0x1B0615u,
+            isSilver ? activeProfile.SilverCurrencyName : activeProfile.GoldCurrencyName,
+            isSilver ? activeProfile.SilverCurrencyItemId : activeProfile.GoldCurrencyItemId,
+            isSilver ? activeProfile.SilverEventId : activeProfile.GoldEventId,
             mode == CurrencyPurchaseMode.OldCoffer ? "钱箱" : "终极固定剂",
             mode == CurrencyPurchaseMode.OldCoffer ? OldCofferItemId : UltimateFixativeItemId,
             cost,
@@ -713,10 +937,10 @@ public sealed class Plugin : IDalamudPlugin
         nextAllowedScanAt = DateTime.MinValue;
         if (!IsIsland())
         {
-            Send("/pdrfe ocn");
+            Send(activeProfile.EntryCommand);
             waitingForEntry = true;
             pendingActionAt = DateTime.MinValue;
-            status = "自动购买完成，正在重新进入蜃景幻界新月岛 北征之章...";
+            status = $"自动购买完成，正在重新进入{activeProfile.ChapterName}...";
         }
         else
         {
@@ -752,11 +976,111 @@ public sealed class Plugin : IDalamudPlugin
         config.GoldFixativeQuantity = Math.Clamp(config.GoldFixativeQuantity, 1, Math.Max(1, CurrencyCap / 1920));
         ClampSelectedPurchaseQuantity(CurrencyKind.Silver, config.SilverPurchaseMode);
         ClampSelectedPurchaseQuantity(CurrencyKind.Gold, config.GoldPurchaseMode);
-        if (config.Version < 2)
+        if (config.Version < 4)
         {
-            config.Version = 2;
+            config.Version = 4;
             config.Save();
         }
+        if (config.Version < 5)
+        {
+            if (config.PartyMode)
+                config.PartyRole = PartyRole.Captain;
+            config.PartyMode = false;
+            config.Version = 5;
+            config.Save();
+        }
+        if (config.Version < 6)
+        {
+            config.PartySyncEnabled = config.PartyRole is PartyRole.Captain or PartyRole.Member or PartyRole.Auto;
+            config.PartyRole = PartyRole.Off;
+            config.Version = 6;
+            config.Save();
+        }
+        if (config.Version < 7)
+        {
+            if (config.PartySyncEnabled)
+                config.HangFriendParty = true;
+            config.Version = 7;
+            config.Save();
+        }
+    }
+
+    private void DrawPartyRoleConfig()
+    {
+        ImGui.Text("组队同步");
+        var syncEnabled = config.PartySyncEnabled;
+        if (ImGui.Checkbox("组队同步##PartySync", ref syncEnabled))
+        {
+            config.PartySyncEnabled = syncEnabled;
+            config.Save();
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("开启后根据当前是否组队选择流程。\n未组队时始终按单人流程（退岛后重进）。");
+
+        if (!syncEnabled)
+        {
+            ImGui.TextWrapped("当前角色：未组队（单人流程）");
+            return;
+        }
+
+        ImGui.Indent();
+        var hangFriend = config.HangFriendParty;
+        ImGui.BeginDisabled(!syncEnabled);
+        if (ImGui.Checkbox("挂友组队##HangFriendParty", ref hangFriend))
+        {
+            config.HangFriendParty = hangFriend;
+            config.Save();
+        }
+        ImGui.EndDisabled();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("开启：挂友同步退岛模式。自动识别队长/队员，外环完成后全员退岛，\n队长等待全部队员 OCN:OUT 后重进并广播 OCN:ENTER，队员跟随。\n关闭：岛内循环模式。外环完成后不退岛，直接重置计数并重新扫宝箱。");
+        ImGui.Unindent();
+
+        var count = GetPartyMemberCount();
+        if (IsInParty())
+        {
+            var roleLabel = LocalPlayerState.IsPartyLeader ? "队长" : "队员";
+            var modeLabel = hangFriend ? "挂友组队" : "岛内循环";
+            ImGui.TextWrapped($"当前角色：{roleLabel}（{count} 人，{modeLabel}）");
+        }
+        else
+        {
+            ImGui.TextColored(new Vector4(1f, 0.7f, 0.2f, 1f), "当前角色：未组队");
+            ImGui.TextWrapped("组队同步已开启但未检测到队伍，外环完成后将按单人流程退岛重进。");
+        }
+
+        if (hangFriend)
+            ImGui.TextWrapped("挂友模式协议：OCN:LEAVE / OCN:OUT / OCN:ENTER");
+        else
+            ImGui.TextWrapped("岛内循环：外环完成后留在副本内，自动重新开始宝箱检测。");
+    }
+
+    private void DrawIslandTargetConfig()
+    {
+        ImGui.Text("目标岛屿");
+        if (ImGui.RadioButton("自动（按当前区域）##IslandAuto", config.IslandTarget == IslandTarget.Auto))
+        {
+            config.IslandTarget = IslandTarget.Auto;
+            activeProfile = ResolveProfile();
+            config.Save();
+        }
+        ImGui.SameLine();
+        if (ImGui.RadioButton("北征之章（北岛）##IslandNorth", config.IslandTarget == IslandTarget.NorthHorn))
+        {
+            config.IslandTarget = IslandTarget.NorthHorn;
+            activeProfile = ResolveProfile();
+            config.Save();
+        }
+        ImGui.SameLine();
+        if (ImGui.RadioButton("南征之章（南岛）##IslandSouth", config.IslandTarget == IslandTarget.SouthHorn))
+        {
+            config.IslandTarget = IslandTarget.SouthHorn;
+            activeProfile = ResolveProfile();
+            config.Save();
+        }
+        ImGui.TextWrapped($"进岛指令：{activeProfile.EntryCommand}");
+        if (!activeProfile.SupportsFixative)
+            ImGui.TextWrapped("南征之章仅支持自动购买古旧钱箱，不支持终极固定剂。");
     }
 
     private void DrawAutomaticPurchaseConfig()
@@ -780,7 +1104,10 @@ public sealed class Plugin : IDalamudPlugin
     private void DrawCurrencyPurchaseConfig(CurrencyKind kind)
     {
         var silverKind = kind == CurrencyKind.Silver;
-        var name = silverKind ? "白银币" : "白金币";
+        var name = silverKind ? activeProfile.SilverCurrencyName : activeProfile.GoldCurrencyName;
+        var shortName = silverKind ? "银币" : "金币";
+        if (activeProfile.SupportsFixative)
+            shortName = silverKind ? "白银币" : "白金币";
         var currentAmount = silverKind ? silverCurrency : goldCurrency;
         var mode = silverKind ? config.SilverPurchaseMode : config.GoldPurchaseMode;
         var trigger = silverKind ? config.SilverTriggerAmount : config.GoldTriggerAmount;
@@ -793,14 +1120,17 @@ public sealed class Plugin : IDalamudPlugin
 
         ImGui.Text($"{name}：{(currentAmount >= 0 ? currentAmount.ToString() : "未检测")}/{CurrencyCap}");
         ImGui.SetNextItemWidth(190f);
-        if (ImGui.BeginCombo($"行为##{name}PurchaseMode", modeText))
+        if (ImGui.BeginCombo($"行为##{shortName}PurchaseMode", modeText))
         {
             foreach (var candidate in Enum.GetValues<CurrencyPurchaseMode>())
             {
+                if (candidate == CurrencyPurchaseMode.UltimateFixative && !activeProfile.SupportsFixative)
+                    continue;
+
                 var label = candidate switch
                 {
                     CurrencyPurchaseMode.OldCoffer => "自动买钱箱",
-                    CurrencyPurchaseMode.UltimateFixative => "自动买终极固定剂",
+                    CurrencyPurchaseMode.UltimateFixative => "自动买终极固定剂（仅北征）",
                     _ => "不购买",
                 };
                 if (ImGui.Selectable(label, candidate == mode))
@@ -819,7 +1149,7 @@ public sealed class Plugin : IDalamudPlugin
         ImGui.BeginDisabled(mode == CurrencyPurchaseMode.None);
         var cost = GetPurchaseCost(kind, mode);
         ImGui.SetNextItemWidth(120f);
-        if (ImGui.InputInt($"触发钱币数量##{name}Trigger", ref trigger))
+        if (ImGui.InputInt($"触发钱币数量##{shortName}Trigger", ref trigger))
         {
             trigger = Math.Clamp(trigger, cost, CurrencyCap);
             if (silverKind) config.SilverTriggerAmount = trigger;
@@ -831,7 +1161,7 @@ public sealed class Plugin : IDalamudPlugin
         var quantity = GetConfiguredQuantity(kind, mode);
         var maxAtTrigger = Math.Max(1, trigger / cost);
         ImGui.SetNextItemWidth(120f);
-        if (ImGui.InputInt($"购买数量##{name}Quantity", ref quantity))
+        if (ImGui.InputInt($"购买数量##{shortName}Quantity", ref quantity))
         {
             quantity = Math.Clamp(quantity, 1, maxAtTrigger);
             SetConfiguredQuantity(kind, mode, quantity);
@@ -866,8 +1196,13 @@ public sealed class Plugin : IDalamudPlugin
 
     public void DrawStatus()
     {
+        activeProfile = ResolveProfile();
         ImGui.Text($"状态：{status}");
-        ImGui.Text($"当前区域 ID：{clientState.TerritoryType}（目标 1346）");
+        ImGui.Text($"当前区域 ID：{clientState.TerritoryType}（目标 {activeProfile.TerritoryId}，{activeProfile.ChapterName}）");
+        ImGui.Spacing();
+        DrawIslandTargetConfig();
+        ImGui.Spacing();
+        DrawPartyRoleConfig();
         ImGui.Spacing();
         if (ImGui.CollapsingHeader("使用说明"))
         {
@@ -953,7 +1288,12 @@ public sealed class Plugin : IDalamudPlugin
 
     public sealed class PluginConfig : IPluginConfiguration
     {
-        public int Version { get; set; } = 2;
+        public int Version { get; set; } = 7;
+        public IslandTarget IslandTarget { get; set; } = IslandTarget.Auto;
+        public bool PartyMode { get; set; }
+        public PartyRole PartyRole { get; set; } = PartyRole.Off;
+        public bool PartySyncEnabled { get; set; }
+        public bool HangFriendParty { get; set; }
         public string CombatJob { get; set; } = "辅助白魔法师";
         public string DiscardPreset { get; set; } = "";
         public bool AutoPurchaseExpanded { get; set; } = true;
