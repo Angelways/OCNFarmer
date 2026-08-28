@@ -1,19 +1,19 @@
-using System.Globalization;
 using System.Numerics;
+using Dalamud.Game.Addon.Lifecycle;
+using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
-using FFXIVClientStructs.FFXIV.Client.Game.Control;
-using FFXIVClientStructs.FFXIV.Client.Game.Event;
-using FFXIVClientStructs.FFXIV.Client.Game.Object;
-using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
-using DalamudObjectKind = Dalamud.Game.ClientState.Objects.Enums.ObjectKind;
+using OmenTools;
+using OmenTools.Extensions;
+using OmenTools.Interop.Game.AddonEvent;
+using OmenTools.Interop.Game.Models.Packets.Upstream;
+using OmenTools.OmenService;
 
 namespace NorthIslandChestPlugin;
-
 public enum CurrencyPurchaseMode
 {
     None,
@@ -37,20 +37,24 @@ internal readonly record struct CurrencyPurchaseRequest(
     int Cost,
     int Quantity);
 
-internal sealed unsafe class CurrencyBuyer
+internal sealed unsafe class CurrencyBuyer : IDisposable
 {
-    private const uint VendorBaseId = 1059485;
     private static readonly TimeSpan OverallTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan ShopTimeout = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan ConfirmationTimeout = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan EventStartDelay = TimeSpan.FromMilliseconds(2500);
+    private static readonly TimeSpan AgentReadyDelay = TimeSpan.FromMilliseconds(800);
+    private static readonly TimeSpan EventStartRetryDelay = TimeSpan.FromMilliseconds(800);
+    private static readonly TimeSpan WindowCleanupDuration = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan BetweenRequestDelay = TimeSpan.FromMilliseconds(750);
+    private const int MaxEventStartAttempts = 3;
+    private const float InitialCrystalRadius = 15f;
 
     private enum Phase
     {
         Idle,
-        MoveToVendor,
-        OpenShop,
-        SelectCurrency,
-        WaitForShop,
+        StartSession,
+        SendPurchase,
         WaitForConfirmation,
         Verify,
         BetweenRequests,
@@ -61,8 +65,8 @@ internal sealed unsafe class CurrencyBuyer
     private readonly IObjectTable objects;
     private readonly ICondition condition;
     private readonly IGameGui gameGui;
+    private readonly IAddonLifecycle addonLifecycle;
     private readonly IPluginLog log;
-    private readonly Action<string> send;
     private readonly Action<bool, string> finished;
     private readonly Queue<CurrencyPurchaseRequest> queue = new();
 
@@ -71,17 +75,20 @@ internal sealed unsafe class CurrencyBuyer
     private DateTime startedAt;
     private DateTime phaseDeadline;
     private DateTime nextActionAt;
-    private DateTime nextTalkAt;
+    private DateTime windowCleanupUntil;
     private int currencyBefore;
     private int rewardBefore;
     private bool confirmationSent;
     private bool closeForNextRequest;
     private bool completionSuccess;
-    private bool cancelInteractionSent;
+    private bool eventCompleted;
+    private bool eventStartSent;
+    private int eventStartAttempts;
+    private uint activeEventId;
+    private uint activeTerritoryId;
+    private Vector3 activeInitialCrystal;
+    private string activeChapterName = IslandProfile.North.ChapterName;
     private string completionMessage = string.Empty;
-    private bool selectionEntriesLogged;
-    private bool confirmationPromptLogged;
-
     internal bool IsBusy => phase != Phase.Idle;
     internal string Status { get; private set; } = "空闲";
 
@@ -90,26 +97,45 @@ internal sealed unsafe class CurrencyBuyer
         IObjectTable objects,
         ICondition condition,
         IGameGui gameGui,
+        IAddonLifecycle addonLifecycle,
         IPluginLog log,
-        Action<string> send,
         Action<bool, string> finished)
     {
         this.clientState = clientState;
         this.objects = objects;
         this.condition = condition;
         this.gameGui = gameGui;
+        this.addonLifecycle = addonLifecycle;
         this.log = log;
-        this.send = send;
         this.finished = finished;
+
+        addonLifecycle.RegisterListener(AddonEvent.PostSetup, "ShopExchangeCurrency", OnShopAddon);
+        addonLifecycle.RegisterListener(AddonEvent.PreDraw, "ShopExchangeCurrency", OnShopAddon);
+        addonLifecycle.RegisterListener(AddonEvent.PostSetup, "ShopExchangeCurrencyDialog", OnShopDialogAddon);
+        addonLifecycle.RegisterListener(AddonEvent.PreDraw, "ShopExchangeCurrencyDialog", OnShopDialogAddon);
+        addonLifecycle.RegisterListener(AddonEvent.PostSetup, "SelectYesno", OnConfirmAddon);
+        addonLifecycle.RegisterListener(AddonEvent.PreDraw, "SelectYesno", OnConfirmAddon);
     }
 
-    internal bool Begin(IEnumerable<CurrencyPurchaseRequest> requests)
+    public void Dispose()
+    {
+        addonLifecycle.UnregisterListener(OnShopAddon);
+        addonLifecycle.UnregisterListener(OnShopDialogAddon);
+        addonLifecycle.UnregisterListener(OnConfirmAddon);
+        CompleteEventSession();
+        queue.Clear();
+        CloseShopWindows();
+    }
+
+    internal bool Begin(IEnumerable<CurrencyPurchaseRequest> requests, IslandProfile profile)
     {
         if (IsBusy) return false;
-        if (clientState.TerritoryType != Plugin.IslandTerritory ||
+        activeTerritoryId = profile.TerritoryId;
+        activeInitialCrystal = profile.InitialCrystal;
+        activeChapterName = profile.ChapterName;
+        if (clientState.TerritoryType != activeTerritoryId ||
             condition[ConditionFlag.BetweenAreas] || condition[ConditionFlag.BetweenAreas51] ||
-            condition[ConditionFlag.InCombat] || condition[ConditionFlag.OccupiedInEvent] ||
-            condition[ConditionFlag.OccupiedInQuestEvent])
+            condition[ConditionFlag.InCombat] || IsOccupiedForShopEvent())
             return false;
         var existingYesNo = GetAddon("SelectYesno");
         if (existingYesNo != null && existingYesNo->IsVisible)
@@ -117,6 +143,22 @@ internal sealed unsafe class CurrencyBuyer
             Status = "存在其他确认窗口，本次不执行自动购买";
             return false;
         }
+        if (!DService.IsInitialized)
+        {
+            Status = "OmenTools 未就绪，无法执行自动购买";
+            return false;
+        }
+        if (GetAddon("ShopExchangeCurrency") != null || GetAddon("ShopExchangeCurrencyDialog") != null)
+        {
+            Status = "商店窗口仍在打开，本次不执行自动购买";
+            return false;
+        }
+        if (!IsNearInitialCrystal())
+        {
+            Status = "请站在初始魔路水晶旁（15 码内）后再自动购买";
+            return false;
+        }
+
         foreach (var request in requests) queue.Enqueue(request);
         if (queue.Count == 0) return false;
 
@@ -128,19 +170,20 @@ internal sealed unsafe class CurrencyBuyer
     internal void Cancel()
     {
         queue.Clear();
-        RequestCloseCallbacks();
-        TryCancelCurrentInteraction();
+        CompleteEventSession();
+        CloseShopWindows();
         phase = Phase.Idle;
         Status = "已取消自动购买";
-        send("/vnav stop");
     }
 
     internal void Update()
     {
         if (!IsBusy) return;
-        if (clientState.TerritoryType != Plugin.IslandTerritory)
+        MaintainWindowCleanup();
+
+        if (clientState.TerritoryType != activeTerritoryId)
         {
-            Fail("已离开蜃景幻界新月岛 北征之章");
+            Fail($"已离开{activeChapterName}");
             return;
         }
         if (phase != Phase.Closing && DateTime.UtcNow - startedAt > OverallTimeout)
@@ -161,20 +204,14 @@ internal sealed unsafe class CurrencyBuyer
 
         switch (phase)
         {
-            case Phase.MoveToVendor:
-                MoveToVendor();
+            case Phase.StartSession:
+                DriveStartSession();
                 break;
-            case Phase.OpenShop:
-                OpenShop();
-                break;
-            case Phase.SelectCurrency:
-                SelectCurrencyShop();
-                break;
-            case Phase.WaitForShop:
-                WaitForShopAndPurchase();
+            case Phase.SendPurchase:
+                DriveSendPurchase();
                 break;
             case Phase.WaitForConfirmation:
-                WaitForConfirmation();
+                DriveWaitForConfirmation();
                 break;
             case Phase.Verify:
                 VerifyPurchase();
@@ -191,8 +228,6 @@ internal sealed unsafe class CurrencyBuyer
     private void StartNextRequest()
     {
         confirmationSent = false;
-        selectionEntriesLogged = false;
-        confirmationPromptLogged = false;
         if (queue.Count == 0)
         {
             FinishNow(true, "自动购买完成");
@@ -200,121 +235,10 @@ internal sealed unsafe class CurrencyBuyer
         }
 
         current = queue.Dequeue();
-        phase = Phase.MoveToVendor;
-        phaseDeadline = DateTime.UtcNow + ShopTimeout;
-        nextActionAt = DateTime.MinValue;
-        nextTalkAt = DateTime.MinValue;
-        Status = $"准备使用{current.CurrencyName}购买{current.RewardName} ×{current.Quantity}";
-    }
-
-    private void MoveToVendor()
-    {
         var player = objects.LocalPlayer;
-        var vendor = objects.FirstOrDefault(obj =>
-            obj.ObjectKind == DalamudObjectKind.EventNpc && obj.BaseId == VendorBaseId && obj.IsTargetable && obj.Address != nint.Zero);
-        if (player == null || vendor == null)
+        if (player == null)
         {
-            if (DateTime.UtcNow >= phaseDeadline) Fail("未找到固定剂兑换商人");
-            return;
-        }
-
-        var distance = Vector3.Distance(player.Position, vendor.Position);
-        if (distance > 4.5f)
-        {
-            if (DateTime.UtcNow >= nextActionAt)
-            {
-                var p = vendor.Position;
-                send($"/vnav moveto {p.X.ToString(CultureInfo.InvariantCulture)} {p.Y.ToString(CultureInfo.InvariantCulture)} {p.Z.ToString(CultureInfo.InvariantCulture)}");
-                nextActionAt = DateTime.UtcNow + TimeSpan.FromSeconds(2);
-            }
-            Status = $"自动购买：正在接近兑换商人（{distance:0.0} 米）";
-            return;
-        }
-
-        send("/vnav stop");
-        phase = Phase.OpenShop;
-        phaseDeadline = DateTime.UtcNow + ShopTimeout;
-        nextActionAt = DateTime.MinValue;
-        Status = $"自动购买：正在打开{current.CurrencyName}商店";
-    }
-
-    private void OpenShop()
-    {
-        ClickTalk();
-        if (GetSelectAddon() != null)
-        {
-            phase = Phase.SelectCurrency;
-            Status = $"自动购买：正在识别{current.CurrencyName}商店选项";
-            return;
-        }
-        if (DateTime.UtcNow >= phaseDeadline)
-        {
-            Fail("打开兑换商店对话超时");
-            return;
-        }
-        if (DateTime.UtcNow < nextActionAt) return;
-
-        var vendor = objects.FirstOrDefault(obj =>
-            obj.ObjectKind == DalamudObjectKind.EventNpc && obj.BaseId == VendorBaseId &&
-            obj.IsTargetable && obj.Address != nint.Zero);
-        if (vendor != null)
-        {
-            try
-            {
-                var targetSystem = TargetSystem.Instance();
-                var gameObject = (GameObject*)vendor.Address;
-                if (targetSystem != null && gameObject != null)
-                    targetSystem->InteractWithObject(gameObject, true);
-            }
-            catch (Exception ex)
-            {
-                log.Warning(ex, "自动购买：与兑换商人交互失败");
-            }
-        }
-        nextActionAt = DateTime.UtcNow + TimeSpan.FromMilliseconds(800);
-    }
-
-    private void SelectCurrencyShop()
-    {
-        ClickTalk();
-        var addon = GetSelectAddon();
-        if (addon == null)
-        {
-            if (DateTime.UtcNow >= phaseDeadline)
-                Fail("兑换商店选择列表未出现或已消失");
-            return;
-        }
-
-        var isIcon = GetAddon("SelectIconString") == addon;
-        var keyword = current.Currency == CurrencyKind.Silver ? "其他" : "白金币";
-        var index = FindSelectIndex(addon, isIcon, keyword);
-        if (index < 0)
-        {
-            if (DateTime.UtcNow >= phaseDeadline)
-                Fail($"商店列表中未找到包含“{keyword}”的选项，已停止以避免误选");
-            return;
-        }
-        if (!FireCallback(addon, index))
-        {
-            Fail($"选择{current.CurrencyName}商店失败");
-            return;
-        }
-
-        log.Information($"自动购买：已按关键字“{keyword}”选择第 {index} 个商店选项");
-        phase = Phase.WaitForShop;
-        phaseDeadline = DateTime.UtcNow + ShopTimeout;
-        nextActionAt = DateTime.UtcNow + TimeSpan.FromMilliseconds(400);
-        Status = $"自动购买：已选择{current.CurrencyName}商店";
-    }
-
-    private void WaitForShopAndPurchase()
-    {
-        ClickTalk();
-        if (DateTime.UtcNow < nextActionAt) return;
-        if (!TryFindRewardIndex(current.RewardItemId, out var rewardIndex))
-        {
-            if (DateTime.UtcNow >= phaseDeadline)
-                Fail($"商店中未找到{current.RewardName}，已停止以避免误购");
+            Fail("玩家不可用");
             return;
         }
 
@@ -325,16 +249,87 @@ internal sealed unsafe class CurrencyBuyer
             Fail($"{current.CurrencyName}已不足以购买{current.RewardName}");
             return;
         }
+
         current = current with { Quantity = quantity };
         currencyBefore = GetItemCount(current.CurrencyItemId);
         rewardBefore = GetItemCount(current.RewardItemId);
+        eventCompleted = false;
+        eventStartSent = false;
+        eventStartAttempts = 0;
+        activeEventId = current.EventId;
+        windowCleanupUntil = DateTime.MinValue;
 
-        var shop = GetAddon("ShopExchangeCurrency");
-        if (shop == null) shop = GetAddon("ShopExchangeItem");
-        if (shop == null || !shop->IsVisible || !FireCallback(shop, 0, rewardIndex, current.Quantity))
+        phase = Phase.StartSession;
+        phaseDeadline = DateTime.UtcNow + ShopTimeout;
+        nextActionAt = DateTime.UtcNow + EventStartDelay;
+        Status = $"准备使用{current.CurrencyName}购买{current.RewardName} ×{current.Quantity}";
+        log.Debug($"自动购买排队 EventStart player={LocalPlayerState.EntityID:X} event={current.EventId:X}");
+    }
+
+    private void DriveStartSession()
+    {
+        SuppressShopWindow();
+        if (DateTime.UtcNow < nextActionAt)
+            return;
+
+        if (!eventStartSent)
+        {
+            if (!CanSendEventStart())
+            {
+                if (DateTime.UtcNow >= phaseDeadline)
+                {
+                    if (LocalPlayerState.EntityID == 0)
+                        Fail("玩家实体未就绪，已中止自动购买");
+                    else
+                        Fail("当前状态不允许发送 EventStart，已中止自动购买");
+                }
+                else
+                    Status = "自动购买：等待网络/过图/鉴定师就绪";
+                return;
+            }
+
+            if (!TrySendEventStart())
+            {
+                eventStartAttempts++;
+                if (eventStartAttempts >= MaxEventStartAttempts)
+                {
+                    Fail("EventStart 发包失败，已中止自动购买");
+                    return;
+                }
+
+                nextActionAt = DateTime.UtcNow + EventStartRetryDelay;
+                Status = $"自动购买：EventStart 重试 {eventStartAttempts}/{MaxEventStartAttempts}";
+                return;
+            }
+
+            eventStartSent = true;
+            nextActionAt = DateTime.UtcNow + AgentReadyDelay;
+            Status = $"自动购买：EventStart 已发送，等待商店 Agent 就绪";
+            return;
+        }
+
+        if (!IsShopAgentReady())
         {
             if (DateTime.UtcNow >= phaseDeadline)
-                Fail("发送购买请求失败");
+                Fail($"商店 Agent 未在 {ShopTimeout.TotalSeconds:0} 秒内就绪，已中止自动购买");
+            return;
+        }
+
+        phase = Phase.SendPurchase;
+        phaseDeadline = DateTime.UtcNow + ShopTimeout;
+        nextActionAt = DateTime.MinValue;
+        Status = $"自动购买：正在发送{current.RewardName}购买请求";
+    }
+
+    private void DriveSendPurchase()
+    {
+        SuppressShopWindow();
+        if (DateTime.UtcNow < nextActionAt) return;
+
+        if (!TrySendShopBuy(out _))
+        {
+            if (DateTime.UtcNow >= phaseDeadline)
+                Fail($"商店中未找到{current.RewardName}，已停止以避免误购");
             return;
         }
 
@@ -344,61 +339,19 @@ internal sealed unsafe class CurrencyBuyer
         Status = $"自动购买：已请求{current.RewardName} ×{current.Quantity}，等待确认";
     }
 
-    private void WaitForConfirmation()
+    private void DriveWaitForConfirmation()
     {
+        SuppressShopWindow();
+        TryConfirmSelectYesno();
         if (PurchaseApplied())
         {
             PurchaseSucceeded();
             return;
         }
 
-        if (!confirmationSent)
-        {
-            var exchangeDialog = GetAddon("ShopExchangeCurrencyDialog");
-            if (exchangeDialog != null && exchangeDialog->IsVisible)
-            {
-                var button = exchangeDialog->GetComponentButtonById(17);
-                if (button != null && button->IsEnabled)
-                {
-                    FireCallback(exchangeDialog, 0, current.Quantity);
-                    confirmationSent = true;
-                    phase = Phase.Verify;
-                    phaseDeadline = DateTime.UtcNow + ConfirmationTimeout;
-                    Status = $"自动购买：已单次确认{current.RewardName}，等待库存更新";
-                    return;
-                }
-            }
-
-            var yesNo = (AddonSelectYesno*)GetAddon("SelectYesno");
-            if (yesNo != null && yesNo->AtkUnitBase.IsVisible)
-            {
-                var prompt = GetYesNoPrompt(yesNo);
-                if (!confirmationPromptLogged)
-                {
-                    log.Information($"自动购买确认文本：{(string.IsNullOrWhiteSpace(prompt) ? "<空>" : prompt)}");
-                    confirmationPromptLogged = true;
-                }
-                if (PromptMatchesPurchase(prompt))
-                {
-                    if (yesNo->YesButton == null || !yesNo->YesButton->IsEnabled)
-                    {
-                        Status = "自动购买：确认窗口已出现，等待“是”按钮可用";
-                        return;
-                    }
-                    yesNo->AtkUnitBase.FireCallbackInt(0);
-                    confirmationSent = true;
-                    phase = Phase.Verify;
-                    phaseDeadline = DateTime.UtcNow + ConfirmationTimeout;
-                    Status = $"自动购买：已单次确认{current.RewardName}，等待库存更新";
-                    return;
-                }
-            }
-        }
-
         if (DateTime.UtcNow >= phaseDeadline)
-            Fail("购买确认窗口未出现或内容不匹配");
+            Fail("购买确认超时或库存未变化");
     }
-
     private void VerifyPurchase()
     {
         if (PurchaseApplied())
@@ -437,102 +390,366 @@ internal sealed unsafe class CurrencyBuyer
 
     private void BeginClosing(bool success, string message, bool continueWithNextRequest)
     {
-        send("/vnav stop");
         completionSuccess = success;
         completionMessage = message;
         closeForNextRequest = continueWithNextRequest;
-        cancelInteractionSent = false;
         phase = Phase.Closing;
-        phaseDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(8);
+        phaseDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
         nextActionAt = DateTime.MinValue;
-        Status = $"{message}，正在正常结束商店事件";
+        ScheduleWindowCleanup();
+        Status = $"{message}，正在结束商店事件";
     }
 
     private void DriveClosing()
     {
-        if (DateTime.UtcNow >= nextActionAt)
-        {
-            RequestCloseCallbacks();
-            nextActionAt = DateTime.UtcNow + TimeSpan.FromMilliseconds(500);
-        }
+        CompleteEventSession();
+        CloseShopWindows();
 
-        var occupied = condition[ConditionFlag.OccupiedInEvent] ||
-                       condition[ConditionFlag.OccupiedInQuestEvent];
-        if (!occupied && !HasPurchaseWindow())
-        {
-            log.Information("自动购买：商店窗口已关闭，OccupiedInEvent/OccupiedInQuestEvent 已解除");
-            if (closeForNextRequest && queue.Count > 0)
-            {
-                phase = Phase.BetweenRequests;
-                nextActionAt = DateTime.UtcNow + TimeSpan.FromMilliseconds(750);
-                Status = "商店事件已正常结束，准备下一笔购买";
-                return;
-            }
+        if (DateTime.UtcNow < phaseDeadline)
+            return;
 
-            FinishNow(completionSuccess, completionMessage);
+        if (closeForNextRequest && queue.Count > 0)
+        {
+            phase = Phase.BetweenRequests;
+            nextActionAt = DateTime.UtcNow + BetweenRequestDelay;
+            Status = "商店事件已结束，准备下一笔购买";
             return;
         }
 
-        if (!cancelInteractionSent && DateTime.UtcNow >= phaseDeadline - TimeSpan.FromSeconds(6))
-            TryCancelCurrentInteraction();
-
-        if (DateTime.UtcNow >= phaseDeadline)
-        {
-            TryCancelCurrentInteraction();
-            FinishNow(false, $"{completionMessage}；商店事件未能在 8 秒内正常结束，请手动关闭对话后再继续");
-        }
+        FinishNow(completionSuccess, completionMessage);
     }
 
     private void FinishNow(bool success, string message)
     {
+        CompleteEventSession();
+        CloseShopWindows();
         queue.Clear();
         phase = Phase.Idle;
+        activeEventId = 0;
         Status = message;
         finished(success, message);
     }
 
-    private bool PromptMatchesPurchase(string prompt)
+    private void CompleteEventSession()
     {
-        var expectedCost = current.Cost * current.Quantity;
-        return !string.IsNullOrWhiteSpace(prompt) &&
-               prompt.Contains(current.CurrencyName, StringComparison.Ordinal) &&
-               prompt.Contains($"×{expectedCost}", StringComparison.Ordinal) &&
-               prompt.Contains("换取以下道具", StringComparison.Ordinal);
-    }
+        if (eventCompleted)
+            return;
 
-    private static string GetYesNoPrompt(AddonSelectYesno* addon)
-    {
-        try
+        eventCompleted = true;
+        if (activeEventId != 0)
         {
-            if (addon == null || addon->PromptText == null) return string.Empty;
-            return ((Utf8String*)&addon->PromptText->NodeText)->ToString();
-        }
-        catch
-        {
-            return string.Empty;
-        }
-    }
-
-    private bool TryFindRewardIndex(uint rewardItemId, out int index)
-    {
-        index = -1;
-        try
-        {
-            var agent = AgentShop.Instance();
-            if (agent == null || !agent->IsAgentActive() || agent->ItemReceive == null) return false;
-            var items = agent->ItemReceiveSpan;
-            for (var i = 0; i < items.Length; i++)
+            try
             {
-                if (items[i].ItemId != rewardItemId) continue;
-                index = i;
-                return true;
+                new EventCompletePackt(activeEventId, 0).Send();
+                log.Debug($"自动购买 EventComplete event={activeEventId:X}");
             }
+            catch (Exception ex)
+            {
+                log.Error(ex, $"自动购买 EventComplete 失败 event={activeEventId:X}");
+            }
+        }
+
+        activeEventId = 0;
+    }
+
+    private bool TrySendEventStart()
+    {
+        if (!DService.IsInitialized || LocalPlayerState.EntityID == 0)
+            return false;
+
+        try
+        {
+            new EventStartPackt(LocalPlayerState.EntityID, current.EventId).Send();
+            log.Debug(
+                $"自动购买 EventStart player={LocalPlayerState.EntityID:X} event={current.EventId:X} attempt={eventStartAttempts + 1}");
+            return true;
         }
         catch (Exception ex)
         {
-            log.Warning(ex, "自动购买：读取商店物品失败");
+            log.Error(ex, $"自动购买 EventStart 失败 event={current.EventId:X}");
+            return false;
         }
+    }
+
+    private bool CanSendEventStart()
+    {
+        if (clientState.TerritoryType != activeTerritoryId)
+            return false;
+        if (!clientState.IsLoggedIn || objects.LocalPlayer == null)
+            return false;
+        if (!IsNearInitialCrystal())
+            return false;
+        if (condition[ConditionFlag.BetweenAreas] || condition[ConditionFlag.BetweenAreas51])
+            return false;
+        if (condition[ConditionFlag.InCombat])
+            return false;
+        if (IsOccupiedForShopEvent())
+            return false;
+        if (!DService.IsInitialized || LocalPlayerState.EntityID == 0)
+            return false;
+
+        var yesNo = GetAddon("SelectYesno");
+        if (yesNo != null && yesNo->IsVisible)
+            return false;
+
+        return true;
+    }
+    private bool IsNearInitialCrystal() => IsNearInitialCrystal(objects.LocalPlayer?.Position, activeInitialCrystal);
+
+    private static bool IsNearInitialCrystal(Vector3? position, Vector3 crystal)
+    {
+        if (position == null)
+            return false;
+
+        var pos = position.Value;
+        var dx = pos.X - crystal.X;
+        var dz = pos.Z - crystal.Z;
+        return dx * dx + dz * dz <= InitialCrystalRadius * InitialCrystalRadius;
+    }
+
+    private bool IsOccupiedForShopEvent() =>
+        condition[ConditionFlag.OccupiedInEvent] ||
+        condition[ConditionFlag.OccupiedInQuestEvent] ||
+        condition[ConditionFlag.Occupied33] ||
+        condition[ConditionFlag.Occupied30];
+
+    private static bool IsShopAgentReady()
+    {
+        try
+        {
+            var agent = AgentShop.Instance();
+            return agent != null && agent->IsAgentActive() && agent->ItemReceive != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool TrySendShopBuy(out int itemIndex)
+    {
+        itemIndex = -1;
+        if (!TryGetAgentItemIndex(current.RewardItemId, out itemIndex))
+            return false;
+
+        return SendShopAgentEvent(itemIndex, current.Quantity);
+    }
+
+    private static bool TryGetAgentItemIndex(uint rewardItemId, out int itemIndex)
+    {
+        itemIndex = -1;
+        var agent = AgentShop.Instance();
+        if (agent == null || !agent->IsAgentActive() || agent->ItemReceive == null)
+            return false;
+
+        var items = agent->ItemReceiveSpan;
+        for (var i = 0; i < items.Length; i++)
+        {
+            if (items[i].ItemId != rewardItemId)
+                continue;
+            itemIndex = i;
+            return true;
+        }
+
         return false;
+    }
+
+    private static bool SendShopAgentEvent(int itemIndex, int quantity)
+    {
+        if (itemIndex < 0 || quantity <= 0)
+            return false;
+
+        if (!IsShopAgentReady())
+            return false;
+
+        try
+        {
+            AgentId.Shop.SendEvent(1, 0, itemIndex, quantity, 0);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void TryConfirmSelectYesno()
+    {
+        if (confirmationSent)
+            return;
+
+        if (!AddonSelectYesnoEvent.ClickYes())
+            return;
+
+        confirmationSent = true;
+        if (phase == Phase.WaitForConfirmation)
+        {
+            phase = Phase.Verify;
+            phaseDeadline = DateTime.UtcNow + ConfirmationTimeout;
+        }
+        Status = $"自动购买：已确认{current.RewardName}兑换";
+    }
+    private void OnShopAddon(AddonEvent type, AddonArgs args)
+    {
+        if (phase == Phase.Idle && DateTime.UtcNow >= windowCleanupUntil)
+            return;
+        if (args.Addon.IsNull)
+            return;
+
+        try
+        {
+            var addon = (AtkUnitBase*)args.Addon.Address;
+            if (addon != null)
+                addon->IsVisible = false;
+        }
+        catch
+        {
+            // ignored
+        }
+    }
+
+    private void OnShopDialogAddon(AddonEvent type, AddonArgs args)
+    {
+        if (args.Addon.IsNull)
+            return;
+
+        if (phase is Phase.Idle or Phase.Closing)
+        {
+            if (DateTime.UtcNow < windowCleanupUntil)
+                HideAddon((AtkUnitBase*)args.Addon.Address);
+            return;
+        }
+
+        if (confirmationSent || phase is not (Phase.SendPurchase or Phase.WaitForConfirmation or Phase.Verify))
+            return;
+
+        try
+        {
+            var addon = (AtkUnitBase*)args.Addon.Address;
+            if (addon == null || !addon->IsReady || !addon->IsVisible)
+                return;
+
+            if (!FireCallback(addon, 0, current.Quantity))
+                return;
+
+            addon->IsVisible = false;
+            confirmationSent = true;
+            if (phase == Phase.WaitForConfirmation)
+            {
+                phase = Phase.Verify;
+                phaseDeadline = DateTime.UtcNow + ConfirmationTimeout;
+            }
+            Status = $"自动购买：已确认{current.RewardName}数量对话框";
+        }
+        catch
+        {
+            // ignored
+        }
+    }
+
+    private void OnConfirmAddon(AddonEvent type, AddonArgs args)
+    {
+        if (phase is not (Phase.SendPurchase or Phase.WaitForConfirmation or Phase.Verify) ||
+            confirmationSent || args.Addon.IsNull)
+            return;
+
+        TryConfirmSelectYesno();
+        if (!confirmationSent)
+            return;
+
+        try
+        {
+            var addon = (AtkUnitBase*)args.Addon.Address;
+            if (addon != null)
+                addon->IsVisible = false;
+        }
+        catch
+        {
+            // ignored
+        }
+    }
+    private void ScheduleWindowCleanup() =>
+        windowCleanupUntil = DateTime.UtcNow + WindowCleanupDuration;
+
+    private void MaintainWindowCleanup()
+    {
+        if (DateTime.UtcNow >= windowCleanupUntil)
+            return;
+        CloseShopWindows();
+    }
+
+    private static void SuppressShopWindow()
+    {
+        try
+        {
+            var addon = RaptureAtkUnitManager.Instance()->GetAddonByName("ShopExchangeCurrency");
+            if (addon != null)
+                addon->IsVisible = false;
+        }
+        catch
+        {
+            // ignored
+        }
+    }
+
+    private void CloseShopWindows()
+    {
+        if (phase is Phase.Closing or Phase.Idle)
+        {
+            CloseWindow("ShopExchangeCurrencyDialog");
+            CloseWindow("ShopExchangeCurrency");
+            CloseWindow("SelectYesno");
+            return;
+        }
+
+        HideWindow("ShopExchangeCurrencyDialog");
+        HideWindow("ShopExchangeCurrency");
+        HideWindow("SelectYesno");
+    }
+
+    private void CloseWindow(string name)
+    {
+        try
+        {
+            var addon = GetAddon(name);
+            if (addon == null)
+                return;
+            addon->IsVisible = false;
+            if (phase == Phase.Closing || phase == Phase.Idle)
+                addon->Close(true);
+        }
+        catch
+        {
+            // ignored
+        }
+    }
+
+    private static void HideWindow(string name)
+    {
+        try
+        {
+            var addon = RaptureAtkUnitManager.Instance()->GetAddonByName(name);
+            if (addon != null)
+                addon->IsVisible = false;
+        }
+        catch
+        {
+            // ignored
+        }
+    }
+
+    private static void HideAddon(AtkUnitBase* addon)
+    {
+        try
+        {
+            if (addon == null)
+                return;
+            addon->IsVisible = false;
+        }
+        catch
+        {
+            // ignored
+        }
     }
 
     private AtkUnitBase* GetAddon(string name)
@@ -547,81 +764,6 @@ internal sealed unsafe class CurrencyBuyer
         catch
         {
             return null;
-        }
-    }
-
-    private AtkUnitBase* GetSelectAddon()
-    {
-        var addon = GetAddon("SelectString");
-        if (addon != null && addon->IsVisible) return addon;
-        addon = GetAddon("SelectIconString");
-        return addon != null && addon->IsVisible ? addon : null;
-    }
-
-    private void ClickTalk()
-    {
-        if (DateTime.UtcNow < nextTalkAt) return;
-        var talk = GetAddon("Talk");
-        if (talk == null || !talk->IsVisible) return;
-        try
-        {
-            talk->FireCallbackInt(0);
-            nextTalkAt = DateTime.UtcNow + TimeSpan.FromMilliseconds(300);
-        }
-        catch { }
-    }
-
-    private int FindSelectIndex(AtkUnitBase* addon, bool isIcon, string keyword)
-    {
-        try
-        {
-            var count = isIcon
-                ? ((AddonSelectIconString*)addon)->PopupMenu.PopupMenu.EntryCount
-                : ((AddonSelectString*)addon)->PopupMenu.PopupMenu.EntryCount;
-            var entries = new List<string>();
-            for (var i = 0; i < count && i < 16; i++)
-            {
-                var text = GetSelectEntryText(addon, isIcon, i);
-                entries.Add($"[{i}] {text}");
-                if (text.Contains(keyword, StringComparison.Ordinal))
-                {
-                    if (!selectionEntriesLogged)
-                    {
-                        log.Information($"自动购买商店选项：{string.Join(" | ", entries)}");
-                        selectionEntriesLogged = true;
-                    }
-                    return i;
-                }
-            }
-
-            if (!selectionEntriesLogged)
-            {
-                log.Information($"自动购买商店选项：{string.Join(" | ", entries)}");
-                selectionEntriesLogged = true;
-            }
-        }
-        catch (Exception ex)
-        {
-            log.Warning(ex, "自动购买：读取商店选择列表失败");
-        }
-        return -1;
-    }
-
-    private static string GetSelectEntryText(AtkUnitBase* addon, bool isIcon, int index)
-    {
-        try
-        {
-            PopupMenu* popup = isIcon
-                ? &((AddonSelectIconString*)addon)->PopupMenu.PopupMenu
-                : &((AddonSelectString*)addon)->PopupMenu.PopupMenu;
-            if (popup->EntryNames == null || index < 0 || index >= popup->EntryCount)
-                return string.Empty;
-            var entry = popup->EntryNames[index];
-            return entry.HasValue ? entry.ToString() ?? string.Empty : string.Empty;
-        }
-        catch
-        {
-            return string.Empty;
         }
     }
 
@@ -662,55 +804,6 @@ internal sealed unsafe class CurrencyBuyer
         catch
         {
             return 0;
-        }
-    }
-
-    private bool HasPurchaseWindow()
-    {
-        foreach (var name in new[] { "ShopExchangeCurrencyDialog", "ShopExchangeCurrency", "ShopExchangeItem", "SelectString", "SelectIconString", "Talk", "SelectYesno" })
-        {
-            var addon = GetAddon(name);
-            if (addon != null && addon->IsVisible) return true;
-        }
-        return false;
-    }
-
-    private void RequestCloseCallbacks()
-    {
-        var exchangeDialog = GetAddon("ShopExchangeCurrencyDialog");
-        if (exchangeDialog != null && exchangeDialog->IsVisible) FireCallback(exchangeDialog, -1);
-        var yesNo = GetAddon("SelectYesno");
-        if (yesNo != null && yesNo->IsVisible) FireCallback(yesNo, 1);
-
-        foreach (var name in new[] { "ShopExchangeCurrency", "ShopExchangeItem", "SelectString", "SelectIconString" })
-        {
-            var addon = GetAddon(name);
-            if (addon != null && addon->IsVisible) FireCallback(addon, -1);
-        }
-
-        ClickTalk();
-    }
-
-    private void TryCancelCurrentInteraction()
-    {
-        if (cancelInteractionSent || current.EventId == 0) return;
-        try
-        {
-            var eventFramework = EventFramework.Instance();
-            var handler = eventFramework == null ? null : eventFramework->GetEventHandlerById(current.EventId);
-            if (handler == null)
-            {
-                log.Warning($"自动购买：未找到商店事件处理器 0x{current.EventId:X6}，无法执行取消兜底");
-                return;
-            }
-
-            handler->CancelInteraction();
-            cancelInteractionSent = true;
-            log.Information($"自动购买：已对商店事件 0x{current.EventId:X6} 调用 CancelInteraction 兜底结束交互");
-        }
-        catch (Exception ex)
-        {
-            log.Error(ex, $"自动购买：取消商店事件 0x{current.EventId:X6} 失败");
         }
     }
 }

@@ -6,15 +6,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <PlatformTarget>x64</PlatformTarget>
     <Platforms>x64</Platforms>
-    <Version>1.4.0.0</Version>
+    <Version>1.5.1.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Author>Angelways</Author>
     <Name>OCNFarmer</Name>
-    <Punchline>自动管理蜃景幻界新月岛北征之章寻宝与钱币购买。</Punchline>
-    <Description>蜃景幻界新月岛 北征之章全自动寻宝，全自动钱币购买（By Gugu）。启动命令：/ocnstart；停止命令：/ocnstop</Description>
+    <Punchline>自动管理蜃景幻界新月岛南征/北征之章寻宝与钱币购买。</Punchline>
+    <Description>蜃景幻界新月岛 南征/北征之章全自动寻宝与钱币购买。启动命令：/ocnstart；停止命令：/ocnstop</Description>
     <RepoUrl>https://github.com/Angelways/OCNFarmer</RepoUrl>
     <Tags>Occult Crescent;宝箱;中文</Tags>
-    <DalamudLibPath>D:\XIVLauncherCN\addon\Hooks\dev</DalamudLibPath>
+    <DalamudLibPath Condition="'$(DalamudLibPath)' == ''">$(APPDATA)\XIVLauncherCN\addon\Hooks\dev</DalamudLibPath>
     <Use_Dalamud_FFXIVClientStructs>true</Use_Dalamud_FFXIVClientStructs>
     <Use_Dalamud_Lumina>false</Use_Dalamud_Lumina>
     <Use_Dalamud_Lumina_Excel>false</Use_Dalamud_Lumina_Excel>
