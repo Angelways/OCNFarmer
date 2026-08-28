@@ -7,18 +7,21 @@ using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.ClientState.Objects.Enums;
+using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Configuration;
 using Dalamud.Plugin.Services;
 using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using OmenTools;
+using OmenTools.OmenService;
 
 namespace NorthIslandChestPlugin;
 
 public sealed class Plugin : IDalamudPlugin
 {
-    private const string PluginVersion = "1.4.0.0";
+    private static readonly string PluginVersion = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "1.5.0.0";
     private static readonly string[] CombatJobs =
     {
         "辅助白魔法师", "辅助武士", "辅助猎人", "辅助武僧", "辅助狂战士",
@@ -43,6 +46,9 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan SubsequentScanInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan JobChangeDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan ReturnScanDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan CurrencyPurchaseDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan CurrencyPurchaseRetryInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan CurrencyPurchaseRetryTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan TreasureCommandDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan LeaveDutyDelay = TimeSpan.FromSeconds(5);
 
@@ -60,11 +66,14 @@ public sealed class Plugin : IDalamudPlugin
     private readonly CurrencyBuyer currencyBuyer;
     private readonly WindowSystem windows = new("北征宝箱");
     private readonly MainWindow mainWindow;
-    private DateTime pendingActionAt = DateTime.MinValue;
     private DateTime pendingScanAt = DateTime.MinValue;
     private DateTime pendingBocchiAt = DateTime.MinValue;
     private DateTime pendingReturnScanAt = DateTime.MinValue;
     private DateTime pendingCurrencyCheckAt = DateTime.MinValue;
+    private DateTime pendingPurchaseAt = DateTime.MinValue;
+    private DateTime purchaseRetryDeadline = DateTime.MinValue;
+    private bool initialCurrencyCheckPending;
+    private string initialCurrencyCheckSource = "首次进岛";
     private DateTime nextAllowedScanAt = DateTime.MinValue;
     private DateTime treasurePhaseAt = DateTime.MinValue;
     private TreasurePhase treasurePhase;
@@ -91,7 +100,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public string Name => "OCNFarmer";
 
-    public Plugin(IChatGui chat, IClientState clientState, IObjectTable objects, IFramework framework, ICommandManager commands, ICondition condition, IGameGui gameGui, IPluginLog log, IDalamudPluginInterface pluginInterface)
+    public Plugin(IChatGui chat, IClientState clientState, IObjectTable objects, IFramework framework, ICommandManager commands, ICondition condition, IGameGui gameGui, IPluginLog log, IAddonLifecycle addonLifecycle, IDalamudPluginInterface pluginInterface)
     {
         this.chat = chat;
         this.clientState = clientState;
@@ -101,12 +110,14 @@ public sealed class Plugin : IDalamudPlugin
         this.condition = condition;
         this.gameGui = gameGui;
         this.log = log;
+        DService.Init(pluginInterface, () => new DServiceInitOptions().EnableOnly(
+            typeof(GamePacketManager)));
         config = pluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
         config.Initialize(pluginInterface);
         combatJob = CombatJobs.Contains(config.CombatJob, StringComparer.Ordinal) ? config.CombatJob : combatJob;
         discardPreset = config.DiscardPreset ?? "";
         NormalizePurchaseConfig();
-        currencyBuyer = new CurrencyBuyer(clientState, objects, condition, gameGui, log, Send, OnCurrencyPurchaseFinished);
+        currencyBuyer = new CurrencyBuyer(clientState, objects, condition, gameGui, addonLifecycle, log, OnCurrencyPurchaseFinished);
         mainWindow = new MainWindow(this);
         windows.AddWindow(mainWindow);
 
@@ -130,7 +141,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
-        currencyBuyer.Cancel();
+        currencyBuyer.Dispose();
         Stop("已停止");
         chat.ChatMessage -= OnChatMessage;
         framework.Update -= OnUpdate;
@@ -138,6 +149,7 @@ public sealed class Plugin : IDalamudPlugin
         commands.RemoveHandler("/ocnstart");
         commands.RemoveHandler("/ocnstop");
         windows.RemoveAllWindows();
+        DService.Uninit();
     }
 
     public void Start()
@@ -150,11 +162,10 @@ public sealed class Plugin : IDalamudPlugin
         {
             Send("/pdrfe ocn");
             waitingForEntry = true;
-            pendingActionAt = DateTime.MinValue;
             status = "正在进入蜃景幻界新月岛 北征之章...";
             return;
         }
-        RequestFreelancerScan("副本内首次");
+        ScheduleInitialCurrencyCheck("副本内首次", TimeSpan.Zero);
     }
 
     public void Stop(string message = "已停止")
@@ -162,8 +173,9 @@ public sealed class Plugin : IDalamudPlugin
         if (currencyBuyer.IsBusy) currencyBuyer.Cancel();
         if (bocchiEnabled) Send("/bocchiillegal off");
         bocchiEnabled = false;
-        running = waitingForEntry = waitingForScan = false;
-        pendingActionAt = pendingScanAt = pendingBocchiAt = pendingReturnScanAt = pendingCurrencyCheckAt = nextAllowedScanAt = DateTime.MinValue;
+        running = waitingForEntry = waitingForScan = initialCurrencyCheckPending = false;
+        pendingScanAt = pendingBocchiAt = pendingReturnScanAt = pendingCurrencyCheckAt = pendingPurchaseAt = nextAllowedScanAt = DateTime.MinValue;
+        purchaseRetryDeadline = DateTime.MinValue;
         treasurePhase = TreasurePhase.None;
         treasurePhaseAt = DateTime.MinValue;
         status = message;
@@ -187,17 +199,11 @@ public sealed class Plugin : IDalamudPlugin
         {
             if (bocchiEnabled) Send("/bocchiillegal off");
             bocchiEnabled = false;
-            status = "当前未在蜃景幻界新月岛 北征之章中，等待重新进入...";
+            status = "当前未在蜃景幻界新月岛 北征之章中，正在自动进入...";
             return;
         }
         // 从副本外进入时只接受品级同步聊天消息，不使用时间兜底判断。
         if (waitingForEntry) return;
-        if (pendingActionAt != DateTime.MinValue && DateTime.UtcNow >= pendingActionAt)
-        {
-            pendingActionAt = DateTime.MinValue;
-            // 首次进岛先用自由人探测宝箱，确认未满后才切换白魔并启动 BOCCHI。
-            RequestFreelancerScan("首次进岛");
-        }
         if (pendingScanAt != DateTime.MinValue && DateTime.UtcNow >= pendingScanAt)
         {
             pendingScanAt = DateTime.MinValue;
@@ -207,7 +213,31 @@ public sealed class Plugin : IDalamudPlugin
         {
             pendingCurrencyCheckAt = DateTime.MinValue;
             UpdateCurrencyCounts();
+            if (HasCurrencyPurchaseRequest())
+            {
+                pendingPurchaseAt = DateTime.UtcNow + CurrencyPurchaseDelay;
+                purchaseRetryDeadline = DateTime.UtcNow + CurrencyPurchaseRetryTimeout;
+                status = "钱币达到购买条件，正在准备自动购买...";
+                return;
+            }
+            ContinueAfterInitialCurrencyCheck();
+        }
+        if (pendingPurchaseAt != DateTime.MinValue && DateTime.UtcNow >= pendingPurchaseAt)
+        {
+            pendingPurchaseAt = DateTime.MinValue;
             if (TryBeginCurrencyPurchase()) return;
+
+            if (HasCurrencyPurchaseRequest() && DateTime.UtcNow < purchaseRetryDeadline)
+            {
+                pendingPurchaseAt = DateTime.UtcNow + CurrencyPurchaseRetryInterval;
+                status = "钱币达到购买条件，正在准备自动购买...";
+                log.Debug($"自动购买暂未就绪，{CurrencyPurchaseRetryInterval.TotalSeconds:0} 秒后重试：{currencyBuyer.Status}");
+                return;
+            }
+
+            log.Warning($"自动购买未能在 {CurrencyPurchaseRetryTimeout.TotalSeconds:0} 秒内开始，本次继续原流程：{currencyBuyer.Status}");
+            purchaseRetryDeadline = DateTime.MinValue;
+            ContinueAfterInitialCurrencyCheck();
         }
         if (pendingReturnScanAt != DateTime.MinValue && DateTime.UtcNow >= pendingReturnScanAt)
         {
@@ -221,7 +251,7 @@ public sealed class Plugin : IDalamudPlugin
             if (!string.IsNullOrWhiteSpace(discardPreset))
                 Send($"/pdrdiscard {discardPreset.Trim()}");
             bocchiEnabled = true;
-            status = $"{combatJob}已切换，BOCCHI 已开启，正在刷 FT";
+            status = "宝箱未达到上限，正在进行战斗流程";
         }
         // 后续扫描由“亚返回”完成消息触发，不再依赖坐标轮询。
     }
@@ -251,7 +281,7 @@ public sealed class Plugin : IDalamudPlugin
         log.Information("自由人切换等待结束，首次和后续扫描均使用同一原生魔寻宝调用");
         treasureCastAttempts = 1;
         var cast = TryCastTreasureSight("首次调用");
-        status = cast ? "已释放魔寻宝（通用动作 32），等待系统消息..." : "正在尝试释放魔寻宝，等待系统消息...";
+        status = cast ? "已释放魔寻宝，等待系统" : "正在尝试释放魔寻宝，等待系统消息...";
         _ = Task.Run(async () =>
         {
             await Task.Delay(800);
@@ -331,12 +361,11 @@ public sealed class Plugin : IDalamudPlugin
         // 该系统消息比 TerritoryType 更能说明副本已经完成加载。
         if (text.Contains("当前任务设有品级同步限制", StringComparison.Ordinal))
         {
-            log.Information("检测到蜃景幻界新月岛 北征之章品级同步系统消息，开始准备首次宝箱检测");
+            log.Information("检测到蜃景幻界新月岛 北征之章品级同步系统消息，开始首次钱币检测");
             if (waitingForEntry)
             {
                 waitingForEntry = false;
-                pendingActionAt = DateTime.UtcNow + JobChangeDelay;
-                status = "已确认进入副本，正在切换自由人...";
+                ScheduleInitialCurrencyCheck("首次进岛", JobChangeDelay);
             }
         }
 
@@ -349,7 +378,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             treasurePhase = TreasurePhase.SecondMove;
             treasurePhaseAt = DateTime.UtcNow + ReturnScanDelay;
-            status = "内环寻宝完成，本角色亚返回已完成，5 秒后移动至小水晶区域...";
+            status = "内环寻宝完成，正在执行外环寻宝流程";
             log.Information("检测到寻宝内环的本角色亚返回完成消息");
             return;
         }
@@ -357,7 +386,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             treasurePhase = TreasurePhase.LeaveDuty;
             treasurePhaseAt = DateTime.UtcNow + ReturnScanDelay;
-            status = "外环寻宝完成，本角色亚返回已完成，5 秒后退出副本...";
+            status = "外环寻宝完成，即将自动重进副本";
             log.Information("检测到寻宝外环的本角色亚返回完成消息");
             return;
         }
@@ -413,11 +442,11 @@ public sealed class Plugin : IDalamudPlugin
         {
             initialScan = false;
             pendingBocchiAt = DateTime.UtcNow + JobChangeDelay;
-            status = $"首次检测：银箱 {silver}/{MaxSilver}，铜箱 {copper}/{MaxCopper}，等待白魔切换";
+            status = $"首次检测：银箱 {silver}/{MaxSilver}，铜箱 {copper}/{MaxCopper}，等待辅助职业切换";
         }
         else
         {
-            status = $"银箱 {silver}/{MaxSilver}，铜箱 {copper}/{MaxCopper}，继续刷 FT";
+            status = $"银箱 {silver}/{MaxSilver}，铜箱 {copper}/{MaxCopper}，进行战斗流程";
         }
     }
 
@@ -469,7 +498,7 @@ public sealed class Plugin : IDalamudPlugin
             case TreasurePhase.InnerStart:
                 Send("/pdr ptreasure 内环");
                 treasurePhase = TreasurePhase.InnerReturn;
-                status = "已开始内环寻宝，等待本角色亚返回...";
+                status = "已开始内环寻宝...";
                 return;
             case TreasurePhase.OuterMount:
                 Send("/gaction 随机坐骑");
@@ -480,7 +509,7 @@ public sealed class Plugin : IDalamudPlugin
             case TreasurePhase.OuterStart:
                 Send("/pdr ptreasure 外环");
                 treasurePhase = TreasurePhase.OuterReturn;
-                status = "已开始外环寻宝，等待本角色亚返回...";
+                status = "已开始外环寻宝...";
                 return;
             case TreasurePhase.LeaveDuty:
                 Send("/pdr leaveduty");
@@ -497,7 +526,6 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     Send("/pdrfe ocn");
                     waitingForEntry = true;
-                    pendingActionAt = DateTime.MinValue;
                     status = "寻宝完成，正在重新进入蜃景幻界新月岛 北征之章...";
                 }
                 else
@@ -594,7 +622,26 @@ public sealed class Plugin : IDalamudPlugin
     {
         silverCurrency = GetInventoryCount(SilverCurrencyItemId);
         goldCurrency = GetInventoryCount(GoldCurrencyItemId);
-        log.Information($"亚返回后钱币检测：白银币 {silverCurrency}/{CurrencyCap}，白金币 {goldCurrency}/{CurrencyCap}");
+        log.Information($"钱币检测：白银币 {silverCurrency}/{CurrencyCap}，白金币 {goldCurrency}/{CurrencyCap}");
+    }
+
+    private void ScheduleInitialCurrencyCheck(string source, TimeSpan delay)
+    {
+        initialCurrencyCheckPending = true;
+        initialCurrencyCheckSource = source;
+        pendingCurrencyCheckAt = DateTime.UtcNow + delay;
+        status = $"{source}：准备检测白银币和白金币...";
+        log.Information($"{source}流程：先检测钱币并决定是否购买，未触发购买后再进行魔寻宝");
+    }
+
+    private void ContinueAfterInitialCurrencyCheck()
+    {
+        if (!initialCurrencyCheckPending)
+            return;
+
+        var source = initialCurrencyCheckSource;
+        initialCurrencyCheckPending = false;
+        RequestFreelancerScan(source);
     }
 
     private unsafe int GetInventoryCount(uint itemId)
@@ -614,23 +661,33 @@ public sealed class Plugin : IDalamudPlugin
 
     private bool TryBeginCurrencyPurchase()
     {
-        var requests = new List<CurrencyPurchaseRequest>();
-        AddCurrencyPurchaseRequest(requests, CurrencyKind.Silver, silverCurrency, config.SilverPurchaseMode, config.SilverTriggerAmount);
-        AddCurrencyPurchaseRequest(requests, CurrencyKind.Gold, goldCurrency, config.GoldPurchaseMode, config.GoldTriggerAmount);
+        var requests = CreateCurrencyPurchaseRequests();
         if (requests.Count == 0) return false;
         if (!currencyBuyer.Begin(requests)) return false;
 
         if (bocchiEnabled) Send("/bocchiillegal off");
         bocchiEnabled = false;
         Send("/vnav stop");
+        initialCurrencyCheckPending = false;
         waitingForEntry = waitingForScan = false;
-        pendingActionAt = pendingScanAt = pendingBocchiAt = pendingReturnScanAt = pendingCurrencyCheckAt = DateTime.MinValue;
+        pendingScanAt = pendingBocchiAt = pendingReturnScanAt = pendingCurrencyCheckAt = pendingPurchaseAt = DateTime.MinValue;
+        purchaseRetryDeadline = DateTime.MinValue;
         treasurePhase = TreasurePhase.None;
         treasurePhaseAt = DateTime.MinValue;
         status = currencyBuyer.Status;
         currencyPurchaseStatus = currencyBuyer.Status;
         log.Information("自动购买已接管流程，其他插件行为已暂停");
         return true;
+    }
+
+    private bool HasCurrencyPurchaseRequest() => CreateCurrencyPurchaseRequests().Count > 0;
+
+    private List<CurrencyPurchaseRequest> CreateCurrencyPurchaseRequests()
+    {
+        var requests = new List<CurrencyPurchaseRequest>();
+        AddCurrencyPurchaseRequest(requests, CurrencyKind.Silver, silverCurrency, config.SilverPurchaseMode, config.SilverTriggerAmount);
+        AddCurrencyPurchaseRequest(requests, CurrencyKind.Gold, goldCurrency, config.GoldPurchaseMode, config.GoldTriggerAmount);
+        return requests;
     }
 
     private void AddCurrencyPurchaseRequest(
@@ -660,6 +717,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnCurrencyPurchaseFinished(bool success, string message)
     {
+        pendingPurchaseAt = purchaseRetryDeadline = DateTime.MinValue;
         currencyPurchaseStatus = success ? message : $"自动购买失败：{message}";
         if (!running) return;
         if (!success)
@@ -676,7 +734,6 @@ public sealed class Plugin : IDalamudPlugin
         {
             Send("/pdrfe ocn");
             waitingForEntry = true;
-            pendingActionAt = DateTime.MinValue;
             status = "自动购买完成，正在重新进入蜃景幻界新月岛 北征之章...";
         }
         else
@@ -798,7 +855,8 @@ public sealed class Plugin : IDalamudPlugin
             SetConfiguredQuantity(kind, mode, quantity);
             config.Save();
         }
-        ImGui.TextWrapped($"单价：{cost} {name}；触发值下最多可购买 {maxAtTrigger} 个。");
+        if (mode != CurrencyPurchaseMode.None)
+            ImGui.TextWrapped($"单价：{cost} {name}；触发值下最多可购买 {maxAtTrigger} 个。");
         ImGui.EndDisabled();
     }
 
