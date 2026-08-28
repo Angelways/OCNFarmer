@@ -1,0 +1,5 @@
+bin/
+obj/
+dependencies/*.zip
+dependencies/OmenTools/bin/
+dependencies/OmenTools/obj/

@@ -25,8 +25,14 @@
   <ItemGroup>
     <Reference Remove="FFXIVClientStructs" />
     <Compile Remove="_dalamud\**" />
+    <Compile Remove="dependencies\**" />
     <None Remove="_dalamud\**" />
+    <None Remove="dependencies\**" />
     <EmbeddedResource Remove="_dalamud\**" />
+    <EmbeddedResource Remove="dependencies\**" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="dependencies\OmenTools\OmenTools.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="FFXIVClientStructs" HintPath="$(DalamudLibPath)\FFXIVClientStructs.dll" Private="false" />
