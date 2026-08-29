@@ -1,6 +1,9 @@
 using System.Numerics;
 using System.Text.RegularExpressions;
 using System.Globalization;
+using System.Diagnostics;
+using System.Net.Http;
+using System.Text;
 using Dalamud.Game.Chat;
 using Dalamud.Game.Command;
 using Dalamud.Game.Text;
@@ -51,6 +54,8 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan CurrencyPurchaseRetryTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan TreasureCommandDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan LeaveDutyDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ProblemCheckInterval = TimeSpan.FromMinutes(12);
+    private static readonly HttpClient NotificationHttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     private enum TreasurePhase { None, FirstMove, FirstCrystal, FirstWaitPlayers, InnerMount, InnerStart, InnerReturn, SecondMove, SecondCrystal, SecondWaitPlayers, OuterMount, OuterStart, OuterReturn, LeaveDuty, Reentry }
 
@@ -96,7 +101,11 @@ public sealed class Plugin : IDalamudPlugin
     private int silverCurrency = -1;
     private int goldCurrency = -1;
     private string currencyPurchaseStatus = "";
+    private readonly Dictionary<string, int> treasureLoot = new(StringComparer.Ordinal);
     private string status = "未运行";
+    private DateTime nextProblemCheckAt = DateTime.MinValue;
+    private int lastProblemCheckSilver = -1;
+    private bool problemCheckBaselineReady;
 
     public string Name => "OCNFarmer";
 
@@ -165,6 +174,8 @@ public sealed class Plugin : IDalamudPlugin
             status = "正在进入蜃景幻界新月岛 北征之章...";
             return;
         }
+        nextProblemCheckAt = DateTime.UtcNow + ProblemCheckInterval;
+        problemCheckBaselineReady = false;
         ScheduleInitialCurrencyCheck("副本内首次", TimeSpan.Zero);
     }
 
@@ -178,6 +189,9 @@ public sealed class Plugin : IDalamudPlugin
         purchaseRetryDeadline = DateTime.MinValue;
         treasurePhase = TreasurePhase.None;
         treasurePhaseAt = DateTime.MinValue;
+        nextProblemCheckAt = DateTime.MinValue;
+        lastProblemCheckSilver = -1;
+        problemCheckBaselineReady = false;
         status = message;
     }
 
@@ -190,11 +204,13 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
         if (!running) return;
+
         if (treasurePhase != TreasurePhase.None)
         {
             UpdateTreasureProcedure();
             return;
         }
+        CheckSilverCurrencyHealth();
         if (!IsIsland())
         {
             if (bocchiEnabled) Send("/bocchiillegal off");
@@ -358,6 +374,8 @@ public sealed class Plugin : IDalamudPlugin
 
         if (!running) return;
 
+        CaptureTreasureLoot(text);
+
         // 该系统消息比 TerritoryType 更能说明副本已经完成加载。
         if (text.Contains("当前任务设有品级同步限制", StringComparison.Ordinal))
         {
@@ -365,6 +383,8 @@ public sealed class Plugin : IDalamudPlugin
             if (waitingForEntry)
             {
                 waitingForEntry = false;
+                nextProblemCheckAt = DateTime.UtcNow + ProblemCheckInterval;
+                problemCheckBaselineReady = false;
                 ScheduleInitialCurrencyCheck("首次进岛", JobChangeDelay);
             }
         }
@@ -384,6 +404,8 @@ public sealed class Plugin : IDalamudPlugin
         }
         if (ownReturnCompleted && treasurePhase == TreasurePhase.OuterReturn)
         {
+            if (config.NotifyTreasureComplete)
+                SendServerChanNotificationAsync("OCNFarmer已完成一次寻宝，请查阅战利品清单。", BuildTreasureLootMessage(), "寻宝完成");
             treasurePhase = TreasurePhase.LeaveDuty;
             treasurePhaseAt = DateTime.UtcNow + ReturnScanDelay;
             status = "外环寻宝完成，即将自动重进副本";
@@ -430,6 +452,44 @@ public sealed class Plugin : IDalamudPlugin
         CompleteTreasureScan();
     }
 
+    private void CaptureTreasureLoot(string text)
+    {
+        if (treasurePhase is not (TreasurePhase.InnerStart or TreasurePhase.InnerReturn or TreasurePhase.OuterStart or TreasurePhase.OuterReturn) ||
+            !text.Contains("获得了", StringComparison.Ordinal))
+            return;
+
+        var index = text.IndexOf("获得了", StringComparison.Ordinal) + "获得了".Length;
+        var reward = text[index..].Trim();
+        reward = reward.TrimEnd('。', '！', '!', '.', ' ');
+        if (reward.Length == 0) return;
+
+        var quantity = 1;
+        var match = Regex.Match(reward, "^(\\d+)\\s*(?:枚|个|件|块|颗|瓶|张|本|只|组)?\\s*(.+)$");
+        if (match.Success && int.TryParse(match.Groups[1].Value, out var parsedQuantity))
+        {
+            quantity = Math.Max(1, parsedQuantity);
+            reward = match.Groups[2].Value.Trim();
+        }
+
+        reward = reward.Trim().Trim('“', '”', '"', '\'');
+        while (reward.Length > 0 && (char.GetUnicodeCategory(reward[0]) == UnicodeCategory.PrivateUse || char.IsControl(reward[0])))
+            reward = reward[1..].TrimStart();
+        if (reward.Length == 0) return;
+        treasureLoot[reward] = treasureLoot.TryGetValue(reward, out var existing) ? existing + quantity : quantity;
+        log.Information($"记录寻宝战利品：{reward} ×{quantity}");
+    }
+
+    private string BuildTreasureLootMessage()
+    {
+        var builder = new StringBuilder(DateTime.Now.ToString("yyyy年M月d日HH:mm", CultureInfo.InvariantCulture));
+        builder.Append(" 完成了一次寻宝  \n本次寻宝的战利品清单：");
+        foreach (var item in treasureLoot.OrderBy(x => x.Value).ThenBy(x => x.Key, StringComparer.Ordinal))
+            builder.Append("  \n").Append(item.Key).Append('×').Append(item.Value);
+        if (treasureLoot.Count == 0)
+            builder.Append("  \n未检测到获得物品消息");
+        return builder.ToString().TrimEnd();
+    }
+
     private void CompleteTreasureScan()
     {
         if (silver >= MaxSilver || copper >= MaxCopper)
@@ -452,6 +512,8 @@ public sealed class Plugin : IDalamudPlugin
 
     private void BeginTreasureProcedure()
     {
+        nextProblemCheckAt = DateTime.MinValue;
+        treasureLoot.Clear();
         treasureError = "";
         treasurePhase = TreasurePhase.FirstMove;
         treasurePhaseAt = DateTime.UtcNow + TreasureCommandDelay;
@@ -530,6 +592,8 @@ public sealed class Plugin : IDalamudPlugin
                 }
                 else
                 {
+                    nextProblemCheckAt = DateTime.UtcNow + ProblemCheckInterval;
+                    problemCheckBaselineReady = false;
                     RequestFreelancerScan("新循环");
                 }
                 break;
@@ -622,7 +686,66 @@ public sealed class Plugin : IDalamudPlugin
     {
         silverCurrency = GetInventoryCount(SilverCurrencyItemId);
         goldCurrency = GetInventoryCount(GoldCurrencyItemId);
+        if (!problemCheckBaselineReady)
+        {
+            lastProblemCheckSilver = silverCurrency;
+            problemCheckBaselineReady = true;
+        }
         log.Information($"钱币检测：白银币 {silverCurrency}/{CurrencyCap}，白金币 {goldCurrency}/{CurrencyCap}");
+    }
+
+    private void CheckSilverCurrencyHealth()
+    {
+        if (!config.NotifyProblem || !running || !IsIsland() || treasurePhase != TreasurePhase.None ||
+            currencyBuyer.IsBusy || nextProblemCheckAt == DateTime.MinValue || DateTime.UtcNow < nextProblemCheckAt)
+            return;
+
+        nextProblemCheckAt = DateTime.UtcNow + ProblemCheckInterval;
+        var hadBaseline = problemCheckBaselineReady;
+        UpdateCurrencyCounts();
+        if (!hadBaseline) return;
+
+        if (silverCurrency == lastProblemCheckSilver)
+            SendServerChanNotificationAsync("OCNFarmer可能遇到问题", "长时间未检测到战斗行为，请注意接管。", "白银币停滞检测");
+        lastProblemCheckSilver = silverCurrency;
+    }
+
+    private void OpenServerChanDocs()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("https://doc.sc3.ft07.com/zh/serverchan3") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "打开 Server酱用户文档失败");
+        }
+    }
+
+    private void SendServerChanNotificationAsync(string title, string desp, string reason)
+    {
+        if (!config.ServerChanEnabled || string.IsNullOrWhiteSpace(config.ServerChanApiUrl)) return;
+        var endpoint = config.ServerChanApiUrl.Trim();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["title"] = title,
+                    ["desp"] = desp,
+                });
+                using var response = await NotificationHttpClient.PostAsync(endpoint, content).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                    log.Warning($"Server酱通知发送失败（{reason}）：HTTP {(int)response.StatusCode}");
+                else
+                    log.Information($"Server酱通知已发送：{reason}");
+            }
+            catch (Exception ex)
+            {
+                log.Error(ex, $"Server酱通知发送异常（{reason}）");
+            }
+        });
     }
 
     private void ScheduleInitialCurrencyCheck(string source, TimeSpan delay)
@@ -727,6 +850,9 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         silverCurrency = goldCurrency = -1;
+        lastProblemCheckSilver = -1;
+        problemCheckBaselineReady = false;
+        nextProblemCheckAt = DateTime.UtcNow + ProblemCheckInterval;
         silver = copper = -1;
         initialScan = true;
         nextAllowedScanAt = DateTime.MinValue;
@@ -793,6 +919,59 @@ public sealed class Plugin : IDalamudPlugin
         DrawCurrencyPurchaseConfig(CurrencyKind.Gold);
         if (!string.IsNullOrWhiteSpace(currencyPurchaseStatus))
             ImGui.TextWrapped($"购买状态：{currencyPurchaseStatus}");
+    }
+
+    private void DrawServerChanConfig()
+    {
+        ImGui.SetNextItemOpen(config.ServerChanExpanded, ImGuiCond.Once);
+        var expanded = ImGui.CollapsingHeader("无人值守通知设置");
+        if (expanded != config.ServerChanExpanded)
+        {
+            config.ServerChanExpanded = expanded;
+            config.Save();
+        }
+        if (!expanded) return;
+
+        ImGui.TextWrapped("通过Server酱，插件可实现在指定条件达成时为你的手机或者其他设备发送一个包含战利品清单的通知。具体参阅");
+        if (ImGui.SmallButton("Server酱用户文档")) OpenServerChanDocs();
+
+        var enabled = config.ServerChanEnabled;
+        if (ImGui.Checkbox("启用通知功能", ref enabled))
+        {
+            config.ServerChanEnabled = enabled;
+            config.Save();
+        }
+        if (!config.ServerChanEnabled) return;
+
+        ImGui.TextWrapped("在此处填写Server酱SendKey页面获取到的API URL");
+        var apiUrl = config.ServerChanApiUrl;
+        ImGui.SetNextItemWidth(-1);
+        if (ImGui.InputText("API URL", ref apiUrl, 512))
+        {
+            config.ServerChanApiUrl = apiUrl;
+            config.Save();
+        }
+
+        var notifyProblem = config.NotifyProblem;
+        if (ImGui.Checkbox("插件出现问题时通知", ref notifyProblem))
+        {
+            config.NotifyProblem = notifyProblem;
+            config.Save();
+        }
+        var notifyComplete = config.NotifyTreasureComplete;
+        if (ImGui.Checkbox("寻宝完成时通知", ref notifyComplete))
+        {
+            config.NotifyTreasureComplete = notifyComplete;
+            config.Save();
+        }
+
+        if (ImGui.Button("发送通知测试"))
+        {
+            SendServerChanNotificationAsync(
+                "OCNFarmer",
+                "这是一条来自OCNFarmer插件的测试消息，如果收到了此消息，说明你的Server酱配置正常。",
+                "测试通知");
+        }
     }
 
     private void DrawCurrencyPurchaseConfig(CurrencyKind kind)
@@ -933,6 +1112,8 @@ public sealed class Plugin : IDalamudPlugin
         ImGui.Spacing();
         DrawAutomaticPurchaseConfig();
         ImGui.Spacing();
+        DrawServerChanConfig();
+        ImGui.Spacing();
         ImGui.TextWrapped("如需自动丢弃跑刀垃圾，请在此处填写DR自动丢弃物品模块的预设名称，留空则不启用");
         ImGui.SetNextItemWidth(-1);
         if (ImGui.InputText("##DiscardPreset", ref discardPreset, 128))
@@ -966,8 +1147,36 @@ public sealed class Plugin : IDalamudPlugin
     private sealed class MainWindow : Dalamud.Interface.Windowing.Window
     {
         private readonly Plugin plugin;
-        public MainWindow(Plugin plugin) : base($"OCNFarmer v{PluginVersion}##OCNFarmer") { this.plugin = plugin; IsOpen = false; }
+        private bool restoreSizePending;
+        public MainWindow(Plugin plugin) : base($"OCNFarmer v{PluginVersion}##OCNFarmer")
+        {
+            this.plugin = plugin;
+            if (plugin.config.WindowWidth > 0 && plugin.config.WindowHeight > 0)
+            {
+                Size = new Vector2(plugin.config.WindowWidth, plugin.config.WindowHeight);
+                SizeCondition = ImGuiCond.Always;
+                restoreSizePending = true;
+            }
+            IsOpen = false;
+        }
         public override void Draw() => plugin.DrawStatus();
+
+        public override void PostDraw()
+        {
+            base.PostDraw();
+            var size = ImGui.GetWindowSize();
+            if (size.X <= 0 || size.Y <= 0) return;
+            if (restoreSizePending)
+            {
+                SizeCondition = ImGuiCond.FirstUseEver;
+                restoreSizePending = false;
+            }
+            if (MathF.Abs(plugin.config.WindowWidth - size.X) < 0.5f &&
+                MathF.Abs(plugin.config.WindowHeight - size.Y) < 0.5f) return;
+            plugin.config.WindowWidth = size.X;
+            plugin.config.WindowHeight = size.Y;
+            plugin.config.Save();
+        }
     }
 
     public sealed class PluginConfig : IPluginConfiguration
@@ -976,6 +1185,13 @@ public sealed class Plugin : IDalamudPlugin
         public string CombatJob { get; set; } = "辅助白魔法师";
         public string DiscardPreset { get; set; } = "";
         public bool AutoPurchaseExpanded { get; set; } = true;
+        public bool ServerChanExpanded { get; set; } = true;
+        public bool ServerChanEnabled { get; set; }
+        public string ServerChanApiUrl { get; set; } = "";
+        public bool NotifyProblem { get; set; } = true;
+        public bool NotifyTreasureComplete { get; set; } = true;
+        public float WindowWidth { get; set; }
+        public float WindowHeight { get; set; }
         public CurrencyPurchaseMode SilverPurchaseMode { get; set; } = CurrencyPurchaseMode.None;
         public CurrencyPurchaseMode GoldPurchaseMode { get; set; } = CurrencyPurchaseMode.None;
         public int SilverTriggerAmount { get; set; } = 9000;

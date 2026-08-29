@@ -1,10 +1,22 @@
 {
   "Author": "Angelways",
   "Name": "OCNFarmer",
-  "Punchline": "自动管理蜃景幻界新月岛北征之章寻宝与钱币购买。",
+  "InternalName": "NorthIslandChestPlugin",
+  "AssemblyVersion": "1.6.0.0",
   "Description": "蜃景幻界新月岛 北征之章全自动寻宝，全自动钱币购买（By Gugu）。启动命令：/ocnstart；停止命令：/ocnstop",
   "ApplicableVersion": "any",
   "RepoUrl": "https://github.com/Angelways/OCNFarmer",
-  "Tags": ["Occult Crescent", "宝箱", "中文"],
-  "IconUrl": "https://raw.githubusercontent.com/Angelways/OCNFarmer/main/icon.png"
+  "Tags": [
+    "Occult Crescent",
+    "宝箱",
+    "中文"
+  ],
+  "DalamudApiLevel": 15,
+  "LoadRequiredState": 0,
+  "LoadSync": false,
+  "CanUnloadAsync": false,
+  "LoadPriority": 0,
+  "IconUrl": "https://raw.githubusercontent.com/Angelways/OCNFarmer/main/icon.png",
+  "Punchline": "自动管理蜃景幻界新月岛北征之章寻宝与钱币购买。",
+  "AcceptsFeedback": true
 }

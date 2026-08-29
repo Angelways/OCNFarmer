@@ -29,22 +29,21 @@ archive must contain exactly:
 - `OmenTools.dll`
 - `GuerrillaNtp.dll`
 - `TinyPinyin.dll`
+- `OmenTools.LICENSE`
 
 Dalamud, FFXIVClientStructs, Lumina, Newtonsoft.Json, and other Dalamud-shipped
 assemblies must not be bundled.
 
 ## Runtime activation
 
-The project reference makes OmenTools APIs available, but OCNFarmer does not
-currently call `DService.Init()`. This is intentional: initializing DService
-discovers and starts OmenTools services, including low-level managers that the
-current plugin does not need.
+OCNFarmer initializes OmenTools with an explicit allowlist. Only
+`GamePacketManager` is started for the headless currency exchange flow; all
+other OmenTools services remain disabled.
 
 When a feature starts using OmenTools services:
 
 1. Call `DService.Init(pluginInterface, options)` once in the plugin constructor.
-2. Disable every unused manager in `DServiceInitOptions`, especially packet,
-   tooltip, hook, and window services.
+2. Add a service to `EnableOnly(...)` only when a feature actually requires it.
 3. Call `DService.Uninit()` once during `Dispose()` after feature work has stopped.
 4. Keep direct packet sending behind game-version checks and in-game validation.
 5. Re-run `Build-Release.ps1` and verify the package on the current Dalamud CN build.
