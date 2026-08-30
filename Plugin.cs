@@ -848,11 +848,9 @@ public sealed class Plugin : IDalamudPlugin
         if (IsMounted())
         {
             treasureMountDeadline = nextTreasureMountAttemptAt = DateTime.MinValue;
-            treasurePhase = firstLeg ? TreasurePhase.InnerStart : TreasurePhase.OuterStart;
-            treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(3);
-            status = firstLeg
-                ? "已到达内环位置，已召唤随机坐骑，3 秒后开始内环寻宝..."
-                : "已到达外环位置，已召唤随机坐骑，3 秒后开始外环寻宝...";
+            Send(firstLeg ? "/pdr ptreasure 内环" : "/pdr ptreasure 外环");
+            treasurePhase = firstLeg ? TreasurePhase.InnerReturn : TreasurePhase.OuterReturn;
+            status = firstLeg ? "已开始内环寻宝..." : "已开始外环寻宝...";
             return;
         }
 
@@ -866,7 +864,6 @@ public sealed class Plugin : IDalamudPlugin
         nextTreasureMountAttemptAt = DateTime.UtcNow + MountRetryInterval;
         if (!IsMounting())
             TryUseRandomMount(firstLeg ? "内环" : "外环");
-        status = "正在召唤随机坐骑，等待骑乘状态...";
     }
 
     private bool HasNearbyPlayer(float radius)
