@@ -56,6 +56,8 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan LeaveDutyDelay = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ProblemCheckInterval = TimeSpan.FromMinutes(12);
     private static readonly TimeSpan TowerCrystalDelay = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan ReturnWeatherCheckDelay = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan TreasureCrystalMoveStartDelay = TimeSpan.FromSeconds(6);
     private static readonly TimeSpan CrystalMoveTimeout = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan MountRetryInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MountRetryTimeout = TimeSpan.FromSeconds(12);
@@ -63,12 +65,12 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly Vector3 CrystalMoveTarget = new(882f, 258.5f, 882f);
     private const uint TowerWeatherId = 192;
     private static readonly Vector3 TowerCenter = new(-320f, 11.5f, 423f);
-    private static readonly float TowerRadius = MathF.Sqrt(6.3f * 6.3f + 7.3f * 7.3f);
+    private static readonly float TowerRadius = MathF.Sqrt(6.3f * 6.3f + 7.3f * 7.3f) - 0.3f;
     private static readonly Vector3 TowerStagingCenter = new(-390f, 68f, 692f);
     private const float TowerStagingRadius = 2f;
     private static readonly HttpClient NotificationHttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
 
-    private enum TreasurePhase { None, FirstMove, FirstCrystal, FirstWaitPlayers, InnerMount, InnerStart, InnerReturn, SecondMove, SecondCrystal, SecondWaitPlayers, OuterMount, OuterStart, OuterReturn, LeaveDuty, Reentry }
+    private enum TreasurePhase { None, FirstMove, FirstMoveDelay, FirstCrystal, FirstWaitPlayers, InnerMount, InnerStart, InnerReturn, SecondMove, SecondMoveDelay, SecondCrystal, SecondWaitPlayers, OuterMount, OuterStart, OuterReturn, LeaveDuty, Reentry }
     private enum TowerPhase { None, MoveToCrystal, CrystalTeleport, MountToTower, MoveToStaging, StagingArrived, MoveToTower, Arrived, DismountBeforeResume }
 
     private readonly IChatGui chat;
@@ -556,9 +558,8 @@ public sealed class Plugin : IDalamudPlugin
         if (!initialScan && ownReturnCompleted)
         {
             weatherCheckPending = true;
-            nextWeatherCheckAt = DateTime.UtcNow;
-            if (TryHandleTowerWeather("普通亚返回完成后")) return;
-            log.Information($"检测到本角色 {localPlayerName} 的亚返回完成消息，将在 5 秒后检测钱币，并按间隔决定是否检测宝箱");
+            nextWeatherCheckAt = DateTime.UtcNow + ReturnWeatherCheckDelay;
+            log.Information($"检测到本角色 {localPlayerName} 的亚返回完成消息，将在至少 6 秒后检测天气，并按间隔决定是否检测钱币和宝箱");
             if (pendingCurrencyCheckAt == DateTime.MinValue)
                 pendingCurrencyCheckAt = DateTime.UtcNow + ReturnScanDelay;
             var nearCopperCap = copper is 28 or 29;
@@ -674,12 +675,22 @@ public sealed class Plugin : IDalamudPlugin
             case TreasurePhase.FirstMove:
                 Send("/bocchiillegal off");
                 bocchiEnabled = false;
+                treasurePhase = TreasurePhase.FirstMoveDelay;
+                treasurePhaseAt = DateTime.UtcNow + TreasureCrystalMoveStartDelay;
+                status = "宝箱达到上限，准备移动至小水晶...";
+                return;
+            case TreasurePhase.FirstMoveDelay:
                 StartCrystalMove(TreasurePhase.FirstCrystal);
                 return;
             case TreasurePhase.FirstCrystal:
                 UpdateCrystalMove(true);
                 return;
             case TreasurePhase.SecondMove:
+                treasurePhase = TreasurePhase.SecondMoveDelay;
+                treasurePhaseAt = DateTime.UtcNow + TreasureCrystalMoveStartDelay;
+                status = "内环寻宝完成，准备移动至小水晶...";
+                return;
+            case TreasurePhase.SecondMoveDelay:
                 StartCrystalMove(TreasurePhase.SecondCrystal);
                 return;
             case TreasurePhase.SecondCrystal:
