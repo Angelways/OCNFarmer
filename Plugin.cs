@@ -55,9 +55,21 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan TreasureCommandDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan LeaveDutyDelay = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ProblemCheckInterval = TimeSpan.FromMinutes(12);
+    private static readonly TimeSpan TowerCrystalDelay = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan CrystalMoveTimeout = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan MountRetryInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan MountRetryTimeout = TimeSpan.FromSeconds(12);
+    private const uint MountRouletteGeneralActionSlot = 9;
+    private static readonly Vector3 CrystalMoveTarget = new(882f, 258.5f, 882f);
+    private const uint TowerWeatherId = 192;
+    private static readonly Vector3 TowerCenter = new(-320f, 11.5f, 423f);
+    private static readonly float TowerRadius = MathF.Sqrt(6.3f * 6.3f + 7.3f * 7.3f);
+    private static readonly Vector3 TowerStagingCenter = new(-390f, 68f, 692f);
+    private const float TowerStagingRadius = 2f;
     private static readonly HttpClient NotificationHttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     private enum TreasurePhase { None, FirstMove, FirstCrystal, FirstWaitPlayers, InnerMount, InnerStart, InnerReturn, SecondMove, SecondCrystal, SecondWaitPlayers, OuterMount, OuterStart, OuterReturn, LeaveDuty, Reentry }
+    private enum TowerPhase { None, MoveToCrystal, CrystalTeleport, MountToTower, MoveToStaging, StagingArrived, MoveToTower, Arrived, DismountBeforeResume }
 
     private readonly IChatGui chat;
     private readonly IClientState clientState;
@@ -106,6 +118,23 @@ public sealed class Plugin : IDalamudPlugin
     private DateTime nextProblemCheckAt = DateTime.MinValue;
     private int lastProblemCheckSilver = -1;
     private bool problemCheckBaselineReady;
+    private TowerPhase towerPhase;
+    private DateTime towerPhaseAt = DateTime.MinValue;
+    private Vector3 towerTarget;
+    private Vector3 towerStagingTarget;
+    private bool towerWeatherHandled;
+    private bool towerWeatherNotificationSent;
+    private bool weatherCheckPending;
+    private DateTime nextWeatherCheckAt = DateTime.MinValue;
+    private DateTime towerMoveDeadline = DateTime.MinValue;
+    private DateTime nextTowerPositionCheckAt = DateTime.MinValue;
+    private DateTime crystalMoveDeadline = DateTime.MinValue;
+    private DateTime nextCrystalMoveCheckAt = DateTime.MinValue;
+    private DateTime mountRetryDeadline = DateTime.MinValue;
+    private DateTime nextMountRetryAt = DateTime.MinValue;
+    private DateTime treasureMountDeadline = DateTime.MinValue;
+    private DateTime nextTreasureMountAttemptAt = DateTime.MinValue;
+    private DateTime towerResumeDeadline = DateTime.MinValue;
 
     public string Name => "OCNFarmer";
 
@@ -167,6 +196,8 @@ public sealed class Plugin : IDalamudPlugin
         running = true;
         silver = copper = -1;
         initialScan = true;
+        towerWeatherHandled = false;
+        towerWeatherNotificationSent = false;
         if (!IsIsland())
         {
             Send("/pdrfe ocn");
@@ -174,6 +205,9 @@ public sealed class Plugin : IDalamudPlugin
             status = "正在进入蜃景幻界新月岛 北征之章...";
             return;
         }
+        weatherCheckPending = true;
+        nextWeatherCheckAt = DateTime.UtcNow;
+        if (TryHandleTowerWeather("岛内点击开始运行")) return;
         nextProblemCheckAt = DateTime.UtcNow + ProblemCheckInterval;
         problemCheckBaselineReady = false;
         ScheduleInitialCurrencyCheck("副本内首次", TimeSpan.Zero);
@@ -189,6 +223,17 @@ public sealed class Plugin : IDalamudPlugin
         purchaseRetryDeadline = DateTime.MinValue;
         treasurePhase = TreasurePhase.None;
         treasurePhaseAt = DateTime.MinValue;
+        towerPhase = TowerPhase.None;
+        towerPhaseAt = DateTime.MinValue;
+        towerWeatherHandled = false;
+        towerWeatherNotificationSent = false;
+        weatherCheckPending = false;
+        nextWeatherCheckAt = DateTime.MinValue;
+        towerMoveDeadline = nextTowerPositionCheckAt = DateTime.MinValue;
+        crystalMoveDeadline = nextCrystalMoveCheckAt = DateTime.MinValue;
+        mountRetryDeadline = nextMountRetryAt = DateTime.MinValue;
+        treasureMountDeadline = nextTreasureMountAttemptAt = DateTime.MinValue;
+        towerResumeDeadline = DateTime.MinValue;
         nextProblemCheckAt = DateTime.MinValue;
         lastProblemCheckSilver = -1;
         problemCheckBaselineReady = false;
@@ -205,6 +250,12 @@ public sealed class Plugin : IDalamudPlugin
         }
         if (!running) return;
 
+        if (towerPhase != TowerPhase.None)
+        {
+            UpdateTowerProcedure();
+            return;
+        }
+
         if (treasurePhase != TreasurePhase.None)
         {
             UpdateTreasureProcedure();
@@ -220,6 +271,14 @@ public sealed class Plugin : IDalamudPlugin
         }
         // 从副本外进入时只接受品级同步聊天消息，不使用时间兜底判断。
         if (waitingForEntry) return;
+        if (weatherCheckPending)
+        {
+            if (DateTime.UtcNow >= nextWeatherCheckAt)
+            {
+                if (TryHandleTowerWeather("进入副本后")) return;
+                nextWeatherCheckAt = DateTime.UtcNow.AddSeconds(1);
+            }
+        }
         if (pendingScanAt != DateTime.MinValue && DateTime.UtcNow >= pendingScanAt)
         {
             pendingScanAt = DateTime.MinValue;
@@ -368,6 +427,85 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    private bool IsMountedOrMounting()
+    {
+        try
+        {
+            return IsMounted() || IsMounting();
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "读取骑乘状态失败");
+            return false;
+        }
+    }
+
+    private bool IsMounted()
+    {
+        return condition[ConditionFlag.Mounted];
+    }
+
+    private bool IsMounting()
+    {
+        return condition[ConditionFlag.Mounting] || condition[ConditionFlag.Mounting71];
+    }
+
+    private unsafe bool TryUseRandomMount(string reason)
+    {
+        try
+        {
+            log.Information($"随机坐骑原生调用开始（{reason}）：通用动作类型={ActionType.GeneralAction}，槽位={MountRouletteGeneralActionSlot}");
+            var actionManager = ActionManager.Instance();
+            if (actionManager == null)
+            {
+                log.Error("随机坐骑原生调用失败：ActionManager.Instance() 返回空指针");
+                return false;
+            }
+
+            // 与 BOCCHI 的 MountRoulette 实现一致：随机坐骑是通用动作 9，使用默认参数。
+            var accepted = actionManager->UseAction(ActionType.GeneralAction, MountRouletteGeneralActionSlot);
+            log.Information($"随机坐骑原生调用完成（{reason}）：UseAction 返回 {accepted}");
+            if (!accepted)
+                log.Warning("游戏拒绝了随机坐骑动作，请检查当前位置、战斗状态和坐骑权限");
+            return accepted;
+        }
+        catch (InvalidOperationException ex)
+        {
+            log.Error(ex, $"随机坐骑原生调用失败（{reason}）：ActionManager 地址未解析");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, $"随机坐骑原生调用失败（{reason}）：原生调用抛出异常");
+            return false;
+        }
+    }
+
+    private unsafe bool TryDismount(string reason)
+    {
+        if (!IsMounted()) return true;
+
+        try
+        {
+            log.Information($"下坐骑原生调用开始（{reason}）");
+            var actionManager = ActionManager.Instance();
+            if (actionManager == null)
+            {
+                log.Error("下坐骑原生调用失败：ActionManager.Instance() 返回空指针");
+                return false;
+            }
+
+            var accepted = actionManager->UseAction(ActionType.Mount, 0);
+            log.Information($"下坐骑原生调用完成（{reason}）：UseAction 返回 {accepted}");
+            return accepted;
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, $"下坐骑原生调用失败（{reason}）");
+            return false;
+        }
+    }
+
     private void OnChatMessage(IHandleableChatMessage message)
     {
         var text = message.Message.TextValue;
@@ -383,9 +521,12 @@ public sealed class Plugin : IDalamudPlugin
             if (waitingForEntry)
             {
                 waitingForEntry = false;
+                weatherCheckPending = true;
+                nextWeatherCheckAt = DateTime.UtcNow;
                 nextProblemCheckAt = DateTime.UtcNow + ProblemCheckInterval;
                 problemCheckBaselineReady = false;
-                ScheduleInitialCurrencyCheck("首次进岛", JobChangeDelay);
+                if (!TryHandleTowerWeather("进入副本品级同步消息"))
+                    ScheduleInitialCurrencyCheck("首次进岛", JobChangeDelay);
             }
         }
 
@@ -414,6 +555,9 @@ public sealed class Plugin : IDalamudPlugin
         }
         if (!initialScan && ownReturnCompleted)
         {
+            weatherCheckPending = true;
+            nextWeatherCheckAt = DateTime.UtcNow;
+            if (TryHandleTowerWeather("普通亚返回完成后")) return;
             log.Information($"检测到本角色 {localPlayerName} 的亚返回完成消息，将在 5 秒后检测钱币，并按间隔决定是否检测宝箱");
             if (pendingCurrencyCheckAt == DateTime.MinValue)
                 pendingCurrencyCheckAt = DateTime.UtcNow + ReturnScanDelay;
@@ -530,32 +674,23 @@ public sealed class Plugin : IDalamudPlugin
             case TreasurePhase.FirstMove:
                 Send("/bocchiillegal off");
                 bocchiEnabled = false;
-                Send("/vnav moveto 882 258.5 882");
-                treasurePhase = TreasurePhase.FirstCrystal;
-                treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(12);
-                status = "正在移动至小水晶区域，等待 12 秒...";
+                StartCrystalMove(TreasurePhase.FirstCrystal);
                 return;
             case TreasurePhase.FirstCrystal:
-                BeginCrystalWait(true);
+                UpdateCrystalMove(true);
                 return;
             case TreasurePhase.SecondMove:
-                Send("/vnav moveto 882 258.5 882");
-                treasurePhase = TreasurePhase.SecondCrystal;
-                treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(12);
-                status = "正在移动至小水晶区域，等待 12 秒...";
+                StartCrystalMove(TreasurePhase.SecondCrystal);
                 return;
             case TreasurePhase.SecondCrystal:
-                BeginCrystalWait(false);
+                UpdateCrystalMove(false);
                 return;
             case TreasurePhase.FirstWaitPlayers:
             case TreasurePhase.SecondWaitPlayers:
                 CheckCrystalPlayers();
                 return;
             case TreasurePhase.InnerMount:
-                Send("/gaction 随机坐骑");
-                treasurePhase = TreasurePhase.InnerStart;
-                treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(3);
-                status = "已到达内环位置，已召唤随机坐骑，3 秒后开始内环寻宝...";
+                UpdateTreasureMount(true);
                 return;
             case TreasurePhase.InnerStart:
                 Send("/pdr ptreasure 内环");
@@ -563,10 +698,7 @@ public sealed class Plugin : IDalamudPlugin
                 status = "已开始内环寻宝...";
                 return;
             case TreasurePhase.OuterMount:
-                Send("/gaction 随机坐骑");
-                treasurePhase = TreasurePhase.OuterStart;
-                treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(3);
-                status = "已到达外环位置，已召唤随机坐骑，3 秒后开始外环寻宝...";
+                UpdateTreasureMount(false);
                 return;
             case TreasurePhase.OuterStart:
                 Send("/pdr ptreasure 外环");
@@ -599,6 +731,42 @@ public sealed class Plugin : IDalamudPlugin
                 break;
         }
 
+    }
+
+    private void StartCrystalMove(TreasurePhase arrivalPhase)
+    {
+        Send($"/vnav moveto {CrystalMoveTarget.X.ToString("0.###", CultureInfo.InvariantCulture)} {CrystalMoveTarget.Y.ToString("0.###", CultureInfo.InvariantCulture)} {CrystalMoveTarget.Z.ToString("0.###", CultureInfo.InvariantCulture)}");
+        treasurePhase = arrivalPhase;
+        crystalMoveDeadline = DateTime.UtcNow + CrystalMoveTimeout;
+        nextCrystalMoveCheckAt = DateTime.UtcNow;
+        status = "正在移动至小水晶区域，检测到达位置...";
+        log.Information($"已执行前往小水晶区域导航，目标坐标 {CrystalMoveTarget}，开始严格坐标轮询");
+    }
+
+    private void UpdateCrystalMove(bool firstLeg)
+    {
+        if (DateTime.UtcNow < nextCrystalMoveCheckAt) return;
+        nextCrystalMoveCheckAt = DateTime.UtcNow.AddSeconds(1);
+        var atTarget = IsAtCrystalMoveTarget();
+        log.Debug($"小水晶区域坐标检测：当前位置 {objects.LocalPlayer?.Position.ToString() ?? "未知"}，目标 {CrystalMoveTarget}，到达={atTarget}");
+        if (!atTarget)
+        {
+            if (DateTime.UtcNow < crystalMoveDeadline) return;
+            Stop("未到达小水晶区域，请检查导航功能");
+            return;
+        }
+
+        crystalMoveDeadline = nextCrystalMoveCheckAt = DateTime.MinValue;
+        BeginCrystalWait(firstLeg);
+    }
+
+    private bool IsAtCrystalMoveTarget()
+    {
+        var player = objects.LocalPlayer;
+        if (player == null) return false;
+
+        // 导航后的坐标存在浮点误差，使用 0.5 米球形容差；相比寻宝/魔之塔区域判定仍是严格的定点检测。
+        return Vector3.DistanceSquared(player.Position, CrystalMoveTarget) <= 0.25f;
     }
 
     private void BeginCrystalWait(bool firstLeg)
@@ -636,14 +804,44 @@ public sealed class Plugin : IDalamudPlugin
         {
             treasurePhase = TreasurePhase.InnerMount;
             treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+            treasureMountDeadline = DateTime.UtcNow + MountRetryTimeout;
+            nextTreasureMountAttemptAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
             status = "周围 50 米内无玩家，1 秒后召唤随机坐骑...";
         }
         else
         {
             treasurePhase = TreasurePhase.OuterMount;
             treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+            treasureMountDeadline = DateTime.UtcNow + MountRetryTimeout;
+            nextTreasureMountAttemptAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
             status = "周围 50 米内无玩家，1 秒后召唤随机坐骑...";
         }
+    }
+
+    private void UpdateTreasureMount(bool firstLeg)
+    {
+        if (IsMounted())
+        {
+            treasureMountDeadline = nextTreasureMountAttemptAt = DateTime.MinValue;
+            treasurePhase = firstLeg ? TreasurePhase.InnerStart : TreasurePhase.OuterStart;
+            treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+            status = firstLeg
+                ? "已到达内环位置，已召唤随机坐骑，3 秒后开始内环寻宝..."
+                : "已到达外环位置，已召唤随机坐骑，3 秒后开始外环寻宝...";
+            return;
+        }
+
+        if (DateTime.UtcNow >= treasureMountDeadline)
+        {
+            Stop("未能召唤随机坐骑，请检查坐骑可用性");
+            return;
+        }
+
+        if (DateTime.UtcNow < nextTreasureMountAttemptAt) return;
+        nextTreasureMountAttemptAt = DateTime.UtcNow + MountRetryInterval;
+        if (!IsMounting())
+            TryUseRandomMount(firstLeg ? "内环" : "外环");
+        status = "正在召唤随机坐骑，等待骑乘状态...";
     }
 
     private bool HasNearbyPlayer(float radius)
@@ -659,6 +857,260 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     private bool IsIsland() => clientState.TerritoryType == IslandTerritory;
+
+    private unsafe uint GetCurrentWeatherId()
+    {
+        try
+        {
+            var weatherManager = WeatherManager.Instance();
+            return weatherManager == null ? 0u : weatherManager->GetCurrentWeather();
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "读取当前天气失败");
+            return 0u;
+        }
+    }
+
+    private bool TryHandleTowerWeather(string reason)
+    {
+        if (!IsIsland() || towerPhase != TowerPhase.None) return towerPhase != TowerPhase.None;
+        var weatherId = GetCurrentWeatherId();
+        log.Information($"天气检测（{reason}）：当前天气 ID={weatherId}，目标 ID={TowerWeatherId}");
+        if (weatherId == 0)
+            return false;
+        weatherCheckPending = false;
+        nextWeatherCheckAt = DateTime.MinValue;
+        if (weatherId != TowerWeatherId)
+        {
+            towerWeatherHandled = false;
+            towerWeatherNotificationSent = false;
+            return false;
+        }
+        if (!towerWeatherNotificationSent)
+        {
+            towerWeatherNotificationSent = true;
+            var now = DateTime.Now.ToString("yyyy年M月d日HH:mm", CultureInfo.InvariantCulture);
+            if (config.NotifyTowerWeather)
+                SendServerChanNotificationAsync("OCNFarmer检测到蜃景天气出现", $"出现时间：{now}", "蜃景天气通知");
+        }
+        // 未启用自动前往时，天气检测只用于通知，不能锁存为“已处理”；
+        // 这样用户随后开启功能并点击开始时，当前 192 天气仍会立即接管流程。
+        if (!config.AutoGoTower)
+        {
+            towerWeatherHandled = false;
+            return false;
+        }
+        if (towerWeatherHandled) return towerPhase != TowerPhase.None;
+        towerWeatherHandled = true;
+        // 天气接管必须优先于钱币、魔寻宝及普通寻宝状态，清除所有已排队的普通动作。
+        initialCurrencyCheckPending = false;
+        pendingCurrencyCheckAt = pendingPurchaseAt = pendingScanAt = pendingReturnScanAt = pendingBocchiAt = DateTime.MinValue;
+        purchaseRetryDeadline = DateTime.MinValue;
+        waitingForScan = false;
+        treasurePhase = TreasurePhase.None;
+        treasurePhaseAt = DateTime.MinValue;
+        if (bocchiEnabled) Send("/bocchiillegal off");
+        bocchiEnabled = false;
+        towerPhase = TowerPhase.MoveToCrystal;
+        towerPhaseAt = DateTime.UtcNow;
+        status = "检测到蜃景天气，正在前往大水晶";
+        log.Information($"检测到天气 {TowerWeatherId}，开始前往魔之塔流程：第一阶段前往大水晶，随后进入中转点 {TowerStagingCenter}");
+        return true;
+    }
+
+    private static Vector3 GetRandomTowerTarget()
+    {
+        var angle = Random.Shared.NextSingle() * MathF.PI * 2f;
+        var radius = MathF.Sqrt(Random.Shared.NextSingle()) * TowerRadius;
+        return new Vector3(TowerCenter.X + MathF.Cos(angle) * radius, TowerCenter.Y, TowerCenter.Z + MathF.Sin(angle) * radius);
+    }
+
+    private static Vector3 GetRandomTowerStagingTarget()
+    {
+        var angle = Random.Shared.NextSingle() * MathF.PI * 2f;
+        var radius = MathF.Sqrt(Random.Shared.NextSingle()) * TowerStagingRadius;
+        return new Vector3(TowerStagingCenter.X + MathF.Cos(angle) * radius, TowerStagingCenter.Y, TowerStagingCenter.Z + MathF.Sin(angle) * radius);
+    }
+
+    private void UpdateTowerProcedure()
+    {
+        if (towerPhaseAt != DateTime.MinValue && DateTime.UtcNow < towerPhaseAt) return;
+        towerPhaseAt = DateTime.MinValue;
+        switch (towerPhase)
+        {
+            case TowerPhase.MoveToCrystal:
+                Send($"/vnav moveto {CrystalMoveTarget.X.ToString("0.###", CultureInfo.InvariantCulture)} {CrystalMoveTarget.Y.ToString("0.###", CultureInfo.InvariantCulture)} {CrystalMoveTarget.Z.ToString("0.###", CultureInfo.InvariantCulture)}");
+                towerPhase = TowerPhase.CrystalTeleport;
+                crystalMoveDeadline = DateTime.UtcNow + CrystalMoveTimeout;
+                nextCrystalMoveCheckAt = DateTime.UtcNow;
+                status = "检测到蜃景天气，正在前往大水晶";
+                return;
+            case TowerPhase.CrystalTeleport:
+                if (DateTime.UtcNow < nextCrystalMoveCheckAt) return;
+                nextCrystalMoveCheckAt = DateTime.UtcNow.AddSeconds(1);
+                if (!IsAtCrystalMoveTarget())
+                {
+                    if (DateTime.UtcNow < crystalMoveDeadline) return;
+                    Stop("未到达大水晶区域，请检查导航功能");
+                    return;
+                }
+                crystalMoveDeadline = nextCrystalMoveCheckAt = DateTime.MinValue;
+                Send("/pdr ptp 遗迹");
+                towerPhase = TowerPhase.MountToTower;
+                towerPhaseAt = DateTime.UtcNow + TowerCrystalDelay;
+                mountRetryDeadline = DateTime.UtcNow + TowerCrystalDelay + MountRetryTimeout;
+                nextMountRetryAt = DateTime.UtcNow + TowerCrystalDelay;
+                status = "已到达小水晶，正在前往魔之塔入口";
+                return;
+            case TowerPhase.MountToTower:
+                if (DateTime.UtcNow >= mountRetryDeadline)
+                {
+                    Stop("未能召唤随机坐骑，请检查坐骑可用性");
+                    return;
+                }
+
+                var mountStarted = IsMountedOrMounting();
+                if (!mountStarted && DateTime.UtcNow >= nextMountRetryAt)
+                {
+                    nextMountRetryAt = DateTime.UtcNow + MountRetryInterval;
+                    log.Information("遗迹小水晶传送等待结束，尝试使用原生随机坐骑动作");
+                    mountStarted = TryUseRandomMount("魔之塔");
+                }
+                if (!mountStarted) return;
+
+                // 骑乘动作已接受或正在进行时即可移动，无需等待 Mounted 状态。
+                mountRetryDeadline = nextMountRetryAt = DateTime.MinValue;
+                towerStagingTarget = GetRandomTowerStagingTarget();
+                towerPhase = TowerPhase.MoveToStaging;
+                towerPhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+                status = "已到达小水晶，正在前往魔之塔入口";
+                return;
+            case TowerPhase.MoveToStaging:
+                Send($"/vnav moveto {towerStagingTarget.X.ToString("0.###", CultureInfo.InvariantCulture)} {towerStagingTarget.Y.ToString("0.###", CultureInfo.InvariantCulture)} {towerStagingTarget.Z.ToString("0.###", CultureInfo.InvariantCulture)}");
+                towerPhase = TowerPhase.StagingArrived;
+                towerMoveDeadline = DateTime.UtcNow + TimeSpan.FromMinutes(3);
+                nextTowerPositionCheckAt = DateTime.UtcNow;
+                status = "已到达小水晶，正在前往魔之塔入口";
+                log.Information($"已执行魔之塔中转点导航，目标坐标 {towerStagingTarget}");
+                return;
+            case TowerPhase.StagingArrived:
+                if (DateTime.UtcNow < nextTowerPositionCheckAt) return;
+                nextTowerPositionCheckAt = DateTime.UtcNow.AddSeconds(1);
+                if (!IsNearPosition(towerStagingTarget, TowerStagingRadius))
+                {
+                    if (DateTime.UtcNow < towerMoveDeadline) return;
+                    Stop("未到达魔之塔中转区域，请检查导航功能");
+                    return;
+                }
+                towerMoveDeadline = nextTowerPositionCheckAt = DateTime.MinValue;
+                towerTarget = GetRandomTowerTarget();
+                towerPhase = TowerPhase.MoveToTower;
+                towerPhaseAt = DateTime.UtcNow;
+                status = "已到达小水晶，正在前往魔之塔入口";
+                log.Information($"已到达魔之塔中转区域，开始第二阶段导航，最终入口目标 {towerTarget}");
+                return;
+            case TowerPhase.MoveToTower:
+                Send($"/vnav moveto {towerTarget.X.ToString("0.###", CultureInfo.InvariantCulture)} {towerTarget.Y.ToString("0.###", CultureInfo.InvariantCulture)} {towerTarget.Z.ToString("0.###", CultureInfo.InvariantCulture)}");
+                towerPhase = TowerPhase.Arrived;
+                towerMoveDeadline = DateTime.UtcNow + TimeSpan.FromMinutes(3);
+                nextTowerPositionCheckAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+                status = "已到达小水晶，正在前往魔之塔入口";
+                log.Information($"开始最终魔之塔入口导航，目标坐标 {towerTarget}");
+                return;
+            case TowerPhase.Arrived:
+                if (DateTime.UtcNow < nextTowerPositionCheckAt) return;
+                nextTowerPositionCheckAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+                if (!IsNearTowerTarget())
+                {
+                    if (DateTime.UtcNow < towerMoveDeadline) return;
+                    Stop("未到达魔之塔进入区域，请检查导航功能");
+                    return;
+                }
+                towerPhase = TowerPhase.None;
+                towerPhaseAt = DateTime.MinValue;
+                towerMoveDeadline = nextTowerPositionCheckAt = DateTime.MinValue;
+                var arrivalWeatherId = GetCurrentWeatherId();
+                log.Information($"到达魔之塔区域后二次天气检测：当前天气 ID={arrivalWeatherId}，目标 ID={TowerWeatherId}");
+                if (arrivalWeatherId != TowerWeatherId)
+                {
+                    TryDismount("魔之塔天气消失后恢复插件功能");
+                    towerWeatherHandled = false;
+                    weatherCheckPending = false;
+                    initialScan = true;
+                    silver = copper = -1;
+                    nextProblemCheckAt = DateTime.UtcNow + ProblemCheckInterval;
+                    problemCheckBaselineReady = false;
+                    towerPhase = TowerPhase.DismountBeforeResume;
+                    towerResumeDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+                    towerPhaseAt = DateTime.UtcNow;
+                    status = "由于到达魔之塔时天气条件已消失，已恢复插件功能";
+                    return;
+                }
+                if (config.NotifyTowerArrival)
+                {
+                    var now = DateTime.Now.ToString("yyyy年M月d日HH:mm", CultureInfo.InvariantCulture);
+                    SendServerChanNotificationAsync("OCNFarmer已到达魔之塔进入区域", $"{now}，插件功能已停止，请注意手动接管。如果你已经设置好了其他插件介入，请忽略。", "魔之塔到达通知");
+                }
+                Stop("已到达魔之塔入口，插件功能停止，等待接管");
+                return;
+            case TowerPhase.DismountBeforeResume:
+                if (IsMounted())
+                {
+                    TryDismount("魔之塔天气消失后恢复插件功能");
+                    if (DateTime.UtcNow >= towerResumeDeadline)
+                    {
+                        Stop("未能下坐骑，无法恢复魔寻宝流程");
+                        return;
+                    }
+                    towerPhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+                    return;
+                }
+                if (IsMounting())
+                {
+                    if (DateTime.UtcNow >= towerResumeDeadline)
+                    {
+                        Stop("坐骑动作未完成，无法恢复魔寻宝流程");
+                        return;
+                    }
+                    towerPhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+                    return;
+                }
+                towerPhase = TowerPhase.None;
+                towerPhaseAt = towerResumeDeadline = DateTime.MinValue;
+                ScheduleInitialCurrencyCheck("魔之塔天气结束后", JobChangeDelay);
+                status = "由于到达魔之塔时天气条件已消失，已恢复插件功能";
+                return;
+        }
+    }
+
+    private bool IsNearTowerTarget()
+    {
+        var player = objects.LocalPlayer;
+        if (player == null) return false;
+        var dx = player.Position.X - TowerCenter.X;
+        var dz = player.Position.Z - TowerCenter.Z;
+        return dx * dx + dz * dz <= TowerRadius * TowerRadius;
+    }
+
+    private bool IsNearPosition(Vector3 target, float radius)
+    {
+        var player = objects.LocalPlayer;
+        if (player == null) return false;
+        var dx = player.Position.X - target.X;
+        var dz = player.Position.Z - target.Z;
+        return dx * dx + dz * dz <= radius * radius;
+    }
+
+    private void BeginTowerProcedureForTest()
+    {
+        if (bocchiEnabled) Send("/bocchiillegal off");
+        bocchiEnabled = false;
+        towerWeatherHandled = true;
+        towerPhase = TowerPhase.MoveToCrystal;
+        towerPhaseAt = DateTime.UtcNow;
+        status = "检测到蜃景天气，正在前往大水晶";
+    }
 
     private bool NearBase()
     {
@@ -964,6 +1416,12 @@ public sealed class Plugin : IDalamudPlugin
             config.NotifyTreasureComplete = notifyComplete;
             config.Save();
         }
+        var notifyTowerWeather = config.NotifyTowerWeather;
+        if (ImGui.Checkbox("魔之塔蜃景天气出现时通知", ref notifyTowerWeather))
+        {
+            config.NotifyTowerWeather = notifyTowerWeather;
+            config.Save();
+        }
 
         if (ImGui.Button("发送通知测试"))
         {
@@ -1132,6 +1590,36 @@ public sealed class Plugin : IDalamudPlugin
         ImGui.SameLine();
         if (ImGui.Button("关闭窗口")) mainWindow.IsOpen = false;
         ImGui.Spacing();
+        ImGui.SetNextItemOpen(config.AutoGoTowerExpanded, ImGuiCond.Once);
+        var towerExpanded = ImGui.CollapsingHeader("自动前往魔之塔设置");
+        if (towerExpanded != config.AutoGoTowerExpanded)
+        {
+            config.AutoGoTowerExpanded = towerExpanded;
+            config.Save();
+        }
+        if (towerExpanded)
+        {
+            ImGui.TextWrapped("注意：该项功能只会在蜃景天气出现时停止插件功能前往魔之塔进入区域，不会自动进行魔之塔战斗，后续流程需要手动或者由其他插件接管。");
+            ImGui.TextWrapped("如果你不知道上述是什么意思，则不要开启此功能，也不要就此功能进行任何反馈。");
+            var autoGoTower = config.AutoGoTower;
+            if (ImGui.Checkbox("蜃景天气出现时自动前往魔之塔区域", ref autoGoTower))
+            {
+                config.AutoGoTower = autoGoTower;
+                config.Save();
+                if (autoGoTower && running && IsIsland())
+                {
+                    weatherCheckPending = true;
+                    nextWeatherCheckAt = DateTime.UtcNow;
+                }
+            }
+            var notifyTowerArrival = config.NotifyTowerArrival;
+            if (ImGui.Checkbox("到达魔之塔进入区域后发送通知", ref notifyTowerArrival))
+            {
+                config.NotifyTowerArrival = notifyTowerArrival;
+                config.Save();
+            }
+        }
+        ImGui.Spacing();
         if (ImGui.CollapsingHeader("Debug"))
         {
             if (ImGui.Button("直接开始寻宝流程（测试用）"))
@@ -1140,6 +1628,11 @@ public sealed class Plugin : IDalamudPlugin
                 silver = MaxSilver;
                 copper = 0;
                 BeginTreasureProcedure();
+            }
+            if (ImGui.Button("直接开始前往魔之塔流程（测试用）"))
+            {
+                if (!running) running = true;
+                BeginTowerProcedureForTest();
             }
         }
     }
@@ -1190,6 +1683,10 @@ public sealed class Plugin : IDalamudPlugin
         public string ServerChanApiUrl { get; set; } = "";
         public bool NotifyProblem { get; set; } = true;
         public bool NotifyTreasureComplete { get; set; } = true;
+        public bool AutoGoTower { get; set; }
+        public bool NotifyTowerArrival { get; set; } = true;
+        public bool NotifyTowerWeather { get; set; }
+        public bool AutoGoTowerExpanded { get; set; }
         public float WindowWidth { get; set; }
         public float WindowHeight { get; set; }
         public CurrencyPurchaseMode SilverPurchaseMode { get; set; } = CurrencyPurchaseMode.None;
