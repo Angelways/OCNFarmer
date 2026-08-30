@@ -126,6 +126,8 @@ public sealed class Plugin : IDalamudPlugin
     private Vector3 towerStagingTarget;
     private bool towerWeatherHandled;
     private bool towerWeatherNotificationSent;
+    private bool towerStartPending;
+    private DateTime towerStartAt = DateTime.MinValue;
     private bool weatherCheckPending;
     private DateTime nextWeatherCheckAt = DateTime.MinValue;
     private DateTime towerMoveDeadline = DateTime.MinValue;
@@ -229,6 +231,8 @@ public sealed class Plugin : IDalamudPlugin
         towerPhaseAt = DateTime.MinValue;
         towerWeatherHandled = false;
         towerWeatherNotificationSent = false;
+        towerStartPending = false;
+        towerStartAt = DateTime.MinValue;
         weatherCheckPending = false;
         nextWeatherCheckAt = DateTime.MinValue;
         towerMoveDeadline = nextTowerPositionCheckAt = DateTime.MinValue;
@@ -251,6 +255,15 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
         if (!running) return;
+
+        if (towerStartPending)
+        {
+            if (DateTime.UtcNow < towerStartAt) return;
+            towerStartPending = false;
+            towerStartAt = DateTime.MinValue;
+            BeginTowerNavigation();
+            return;
+        }
 
         if (towerPhase != TowerPhase.None)
         {
@@ -558,8 +571,9 @@ public sealed class Plugin : IDalamudPlugin
         if (!initialScan && ownReturnCompleted)
         {
             weatherCheckPending = true;
-            nextWeatherCheckAt = DateTime.UtcNow + ReturnWeatherCheckDelay;
-            log.Information($"检测到本角色 {localPlayerName} 的亚返回完成消息，将在至少 6 秒后检测天气，并按间隔决定是否检测钱币和宝箱");
+            nextWeatherCheckAt = DateTime.UtcNow;
+            if (TryHandleTowerWeather("普通亚返回完成后")) return;
+            log.Information($"检测到本角色 {localPlayerName} 的亚返回完成消息，已立即检测天气，并按间隔检测钱币和宝箱");
             if (pendingCurrencyCheckAt == DateTime.MinValue)
                 pendingCurrencyCheckAt = DateTime.UtcNow + ReturnScanDelay;
             var nearCopperCap = copper is 28 or 29;
@@ -923,11 +937,19 @@ public sealed class Plugin : IDalamudPlugin
         treasurePhaseAt = DateTime.MinValue;
         if (bocchiEnabled) Send("/bocchiillegal off");
         bocchiEnabled = false;
+        towerStartPending = true;
+        towerStartAt = DateTime.UtcNow + ReturnWeatherCheckDelay;
+        status = "检测到蜃景天气，正在前往大水晶";
+        log.Information($"检测到天气 {TowerWeatherId}，将在 6 秒后开始前往大水晶，随后进入中转点 {TowerStagingCenter}");
+        return true;
+    }
+
+    private void BeginTowerNavigation()
+    {
         towerPhase = TowerPhase.MoveToCrystal;
         towerPhaseAt = DateTime.UtcNow;
         status = "检测到蜃景天气，正在前往大水晶";
-        log.Information($"检测到天气 {TowerWeatherId}，开始前往魔之塔流程：第一阶段前往大水晶，随后进入中转点 {TowerStagingCenter}");
-        return true;
+        log.Information($"天气延迟等待结束，开始前往魔之塔流程：第一阶段前往大水晶，随后进入中转点 {TowerStagingCenter}");
     }
 
     private static Vector3 GetRandomTowerTarget()
