@@ -42,8 +42,7 @@ internal sealed unsafe class CurrencyBuyer : IDisposable
     private static readonly TimeSpan OverallTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan ShopTimeout = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan ConfirmationTimeout = TimeSpan.FromSeconds(6);
-    private static readonly Vector3 InitialCrystal = new(882f, 258.5f, 882f);
-    private const float InitialCrystalRadius = 15f;
+    private const float CurrencyExchangeRadius = 15f;
     private static readonly TimeSpan EventStartDelay = TimeSpan.FromMilliseconds(2500);
     private static readonly TimeSpan AgentReadyDelay = TimeSpan.FromMilliseconds(800);
     private static readonly TimeSpan EventStartRetryDelay = TimeSpan.FromMilliseconds(800);
@@ -86,6 +85,9 @@ internal sealed unsafe class CurrencyBuyer : IDisposable
     private bool eventStartSent;
     private int eventStartAttempts;
     private uint activeEventId;
+    private uint activeTerritoryId = IslandProfile.NorthTerritoryId;
+    private Vector3 activeCurrencyExchangeAnchor = IslandProfile.North.CurrencyExchangeAnchor;
+    private string activeChapterName = IslandProfile.North.ChapterName;
     private string completionMessage = string.Empty;
     internal bool IsBusy => phase != Phase.Idle;
     internal string Status { get; private set; } = "空闲";
@@ -125,10 +127,13 @@ internal sealed unsafe class CurrencyBuyer : IDisposable
         CloseShopWindows();
     }
 
-    internal bool Begin(IEnumerable<CurrencyPurchaseRequest> requests)
+    internal bool Begin(IEnumerable<CurrencyPurchaseRequest> requests, IslandProfile profile)
     {
         if (IsBusy) return false;
-        if (clientState.TerritoryType != Plugin.IslandTerritory ||
+        activeTerritoryId = profile.TerritoryId;
+        activeCurrencyExchangeAnchor = profile.CurrencyExchangeAnchor;
+        activeChapterName = profile.ChapterName;
+        if (clientState.TerritoryType != activeTerritoryId ||
             condition[ConditionFlag.BetweenAreas] || condition[ConditionFlag.BetweenAreas51] ||
             condition[ConditionFlag.InCombat] || IsOccupiedForShopEvent())
             return false;
@@ -148,9 +153,9 @@ internal sealed unsafe class CurrencyBuyer : IDisposable
             Status = "当前无法开始自动购买";
             return false;
         }
-        if (!IsNearInitialCrystal())
+        if (!IsNearCurrencyExchange())
         {
-            Status = "请站在初始魔路水晶旁（15 码内）后再自动购买";
+            Status = "请站在钱币商人附近（15 码内）后再自动购买";
             return false;
         }
 
@@ -178,9 +183,9 @@ internal sealed unsafe class CurrencyBuyer : IDisposable
         if (!IsBusy) return;
         MaintainWindowCleanup();
 
-        if (clientState.TerritoryType != Plugin.IslandTerritory)
+        if (clientState.TerritoryType != activeTerritoryId)
         {
-            Fail("已离开蜃景幻界新月岛 北征之章");
+            Fail($"已离开{activeChapterName}");
             return;
         }
         if (phase != Phase.Closing && DateTime.UtcNow - startedAt > OverallTimeout)
@@ -499,11 +504,11 @@ internal sealed unsafe class CurrencyBuyer : IDisposable
 
     private bool CanSendEventStart()
     {
-        if (clientState.TerritoryType != Plugin.IslandTerritory)
+        if (clientState.TerritoryType != activeTerritoryId)
             return false;
         if (!clientState.IsLoggedIn || objects.LocalPlayer == null)
             return false;
-        if (!IsNearInitialCrystal())
+        if (!IsNearCurrencyExchange())
             return false;
         if (condition[ConditionFlag.BetweenAreas] || condition[ConditionFlag.BetweenAreas51])
             return false;
@@ -520,17 +525,17 @@ internal sealed unsafe class CurrencyBuyer : IDisposable
 
         return true;
     }
-    private bool IsNearInitialCrystal() => IsNearInitialCrystal(objects.LocalPlayer?.Position);
+    private bool IsNearCurrencyExchange() => IsNearCurrencyExchange(objects.LocalPlayer?.Position);
 
-    private static bool IsNearInitialCrystal(Vector3? position)
+    private bool IsNearCurrencyExchange(Vector3? position)
     {
         if (position == null)
             return false;
 
         var pos = position.Value;
-        var dx = pos.X - InitialCrystal.X;
-        var dz = pos.Z - InitialCrystal.Z;
-        return dx * dx + dz * dz <= InitialCrystalRadius * InitialCrystalRadius;
+        var dx = pos.X - activeCurrencyExchangeAnchor.X;
+        var dz = pos.Z - activeCurrencyExchangeAnchor.Z;
+        return dx * dx + dz * dz <= CurrencyExchangeRadius * CurrencyExchangeRadius;
     }
 
     private bool IsOccupiedForShopEvent() =>
