@@ -35,10 +35,7 @@ public sealed class Plugin : IDalamudPlugin
     };
     private const uint TreasureGeneralActionSlot = 32;
     private const ulong GeneralActionTarget = 3758096384UL;
-    internal const uint IslandTerritory = 1346;
     private const int CurrencyCap = 9999;
-    private const uint SilverCurrencyItemId = 51975;
-    private const uint GoldCurrencyItemId = 51976;
     private const uint UltimateFixativeItemId = 51978;
     private const uint OldCofferItemId = 47740;
     private const int MaxSilver = 8;
@@ -62,7 +59,6 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan MountRetryInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MountRetryTimeout = TimeSpan.FromSeconds(12);
     private const uint MountRouletteGeneralActionSlot = 9;
-    private static readonly Vector3 CrystalMoveTarget = new(882f, 258.5f, 882f);
     private const uint TowerWeatherId = 192;
     private static readonly Vector3 TowerCenter = new(-320f, 11.5f, 423f);
     private static readonly float TowerRadius = MathF.Sqrt(6.3f * 6.3f + 7.3f * 7.3f) - 0.3f;
@@ -82,6 +78,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IGameGui gameGui;
     private readonly IPluginLog log;
     private readonly PluginConfig config;
+    private IslandProfile activeProfile = IslandProfile.North;
     private readonly CurrencyBuyer currencyBuyer;
     private readonly WindowSystem windows = new("北征宝箱");
     private readonly MainWindow mainWindow;
@@ -102,7 +99,6 @@ public sealed class Plugin : IDalamudPlugin
     private DateTime nextPlayerCheckAt = DateTime.MinValue;
     private string currentCrystal = "";
     private bool innerLeg;
-    private static readonly string[] Crystals = { "妖火", "城塞", "圣堂", "遗迹", "街道" };
     private string treasureError = "";
     private bool running;
     private bool bocchiEnabled;
@@ -158,6 +154,7 @@ public sealed class Plugin : IDalamudPlugin
         config.Initialize(pluginInterface);
         combatJob = CombatJobs.Contains(config.CombatJob, StringComparer.Ordinal) ? config.CombatJob : combatJob;
         discardPreset = config.DiscardPreset ?? "";
+        RefreshProfile();
         NormalizePurchaseConfig();
         currencyBuyer = new CurrencyBuyer(clientState, objects, condition, gameGui, addonLifecycle, log, OnCurrencyPurchaseFinished);
         mainWindow = new MainWindow(this);
@@ -202,11 +199,12 @@ public sealed class Plugin : IDalamudPlugin
         initialScan = true;
         towerWeatherHandled = false;
         towerWeatherNotificationSent = false;
+        RefreshProfile();
         if (!IsIsland())
         {
-            Send("/pdrfe ocn");
+            Send(activeProfile.EntryCommand);
             waitingForEntry = true;
-            status = "正在进入蜃景幻界新月岛 北征之章...";
+            status = $"正在进入{activeProfile.ChapterName}...";
             return;
         }
         weatherCheckPending = true;
@@ -248,6 +246,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnUpdate(IFramework framework)
     {
+        RefreshProfile();
         if (currencyBuyer.IsBusy)
         {
             currencyBuyer.Update();
@@ -281,7 +280,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             if (bocchiEnabled) Send("/bocchiillegal off");
             bocchiEnabled = false;
-            status = "当前未在蜃景幻界新月岛 北征之章中，正在自动进入...";
+            status = $"当前未在{activeProfile.ChapterName}中，正在自动进入...";
             return;
         }
         // 从副本外进入时只接受品级同步聊天消息，不使用时间兜底判断。
@@ -532,7 +531,7 @@ public sealed class Plugin : IDalamudPlugin
         // 该系统消息比 TerritoryType 更能说明副本已经完成加载。
         if (text.Contains("当前任务设有品级同步限制", StringComparison.Ordinal))
         {
-            log.Information("检测到蜃景幻界新月岛 北征之章品级同步系统消息，开始首次钱币检测");
+            log.Information($"检测到{activeProfile.ChapterName}品级同步系统消息，开始首次钱币检测");
             if (waitingForEntry)
             {
                 waitingForEntry = false;
@@ -743,9 +742,9 @@ public sealed class Plugin : IDalamudPlugin
                 initialScan = true;
                 if (!IsIsland())
                 {
-                    Send("/pdrfe ocn");
+                    Send(activeProfile.EntryCommand);
                     waitingForEntry = true;
-                    status = "寻宝完成，正在重新进入蜃景幻界新月岛 北征之章...";
+                    status = $"寻宝完成，正在重新进入{activeProfile.ChapterName}...";
                 }
                 else
                 {
@@ -760,12 +759,13 @@ public sealed class Plugin : IDalamudPlugin
 
     private void StartCrystalMove(TreasurePhase arrivalPhase)
     {
-        Send($"/vnav moveto {CrystalMoveTarget.X.ToString("0.###", CultureInfo.InvariantCulture)} {CrystalMoveTarget.Y.ToString("0.###", CultureInfo.InvariantCulture)} {CrystalMoveTarget.Z.ToString("0.###", CultureInfo.InvariantCulture)}");
+        var crystal = activeProfile.InitialCrystal;
+        Send($"/vnav moveto {crystal.X.ToString("0.###", CultureInfo.InvariantCulture)} {crystal.Y.ToString("0.###", CultureInfo.InvariantCulture)} {crystal.Z.ToString("0.###", CultureInfo.InvariantCulture)}");
         treasurePhase = arrivalPhase;
         crystalMoveDeadline = DateTime.UtcNow + CrystalMoveTimeout;
         nextCrystalMoveCheckAt = DateTime.UtcNow;
         status = "正在移动至小水晶区域，检测到达位置...";
-        log.Information($"已执行前往小水晶区域导航，目标坐标 {CrystalMoveTarget}，开始严格坐标轮询");
+        log.Information($"已执行前往小水晶区域导航，目标坐标 {crystal}，开始严格坐标轮询");
     }
 
     private void UpdateCrystalMove(bool firstLeg)
@@ -773,7 +773,7 @@ public sealed class Plugin : IDalamudPlugin
         if (DateTime.UtcNow < nextCrystalMoveCheckAt) return;
         nextCrystalMoveCheckAt = DateTime.UtcNow.AddSeconds(1);
         var atTarget = IsAtCrystalMoveTarget();
-        log.Debug($"小水晶区域坐标检测：当前位置 {objects.LocalPlayer?.Position.ToString() ?? "未知"}，目标 {CrystalMoveTarget}，到达={atTarget}");
+        log.Debug($"小水晶区域坐标检测：当前位置 {objects.LocalPlayer?.Position.ToString() ?? "未知"}，目标 {activeProfile.InitialCrystal}，到达={atTarget}");
         if (!atTarget)
         {
             if (DateTime.UtcNow < crystalMoveDeadline) return;
@@ -791,13 +791,13 @@ public sealed class Plugin : IDalamudPlugin
         if (player == null) return false;
 
         // 导航后的坐标存在浮点误差，使用 0.5 米球形容差；相比寻宝/魔之塔区域判定仍是严格的定点检测。
-        return Vector3.DistanceSquared(player.Position, CrystalMoveTarget) <= 0.25f;
+        return Vector3.DistanceSquared(player.Position, activeProfile.InitialCrystal) <= 0.25f;
     }
 
     private void BeginCrystalWait(bool firstLeg)
     {
         innerLeg = firstLeg;
-        currentCrystal = Crystals[Random.Shared.Next(Crystals.Length)];
+        currentCrystal = activeProfile.ShardKeywords[Random.Shared.Next(activeProfile.ShardKeywords.Length)];
         Send($"/pdr ptp {currentCrystal}");
         treasurePhase = firstLeg ? TreasurePhase.FirstWaitPlayers : TreasurePhase.SecondWaitPlayers;
         treasurePhaseAt = DateTime.UtcNow + TimeSpan.FromSeconds(2);
@@ -815,7 +815,7 @@ public sealed class Plugin : IDalamudPlugin
             status = "等待周围玩家中...";
             if (DateTime.UtcNow - playerWaitStartedAt > TimeSpan.FromSeconds(15))
             {
-                var alternatives = Crystals.Where(x => x != currentCrystal).ToArray();
+                var alternatives = activeProfile.ShardKeywords.Where(x => x != currentCrystal).ToArray();
                 currentCrystal = alternatives[Random.Shared.Next(alternatives.Length)];
                 Send($"/pdr ptp {currentCrystal}");
                 playerWaitStartedAt = DateTime.UtcNow + TimeSpan.FromSeconds(2);
@@ -878,7 +878,33 @@ public sealed class Plugin : IDalamudPlugin
         return false;
     }
 
-    private bool IsIsland() => clientState.TerritoryType == IslandTerritory;
+    private bool IsIsland() => clientState.TerritoryType == activeProfile.TerritoryId;
+
+    private IslandProfile ResolveProfile() =>
+        IslandProfile.Resolve(config.IslandTarget);
+
+    private void RefreshProfile()
+    {
+        activeProfile = ResolveProfile();
+        ClampFixativeIfUnsupported();
+    }
+
+    private void ClampFixativeIfUnsupported()
+    {
+        if (activeProfile.SupportsFixative) return;
+        var changed = false;
+        if (config.SilverPurchaseMode == CurrencyPurchaseMode.UltimateFixative)
+        {
+            config.SilverPurchaseMode = CurrencyPurchaseMode.None;
+            changed = true;
+        }
+        if (config.GoldPurchaseMode == CurrencyPurchaseMode.UltimateFixative)
+        {
+            config.GoldPurchaseMode = CurrencyPurchaseMode.None;
+            changed = true;
+        }
+        if (changed) config.Save();
+    }
 
     private unsafe uint GetCurrentWeatherId()
     {
@@ -896,6 +922,12 @@ public sealed class Plugin : IDalamudPlugin
 
     private bool TryHandleTowerWeather(string reason)
     {
+        if (!activeProfile.SupportsTower)
+        {
+            weatherCheckPending = false;
+            nextWeatherCheckAt = DateTime.MinValue;
+            return false;
+        }
         if (!IsIsland() || towerPhase != TowerPhase.None) return towerPhase != TowerPhase.None;
         var weatherId = GetCurrentWeatherId();
         log.Information($"天气检测（{reason}）：当前天气 ID={weatherId}，目标 ID={TowerWeatherId}");
@@ -970,7 +1002,8 @@ public sealed class Plugin : IDalamudPlugin
         switch (towerPhase)
         {
             case TowerPhase.MoveToCrystal:
-                Send($"/vnav moveto {CrystalMoveTarget.X.ToString("0.###", CultureInfo.InvariantCulture)} {CrystalMoveTarget.Y.ToString("0.###", CultureInfo.InvariantCulture)} {CrystalMoveTarget.Z.ToString("0.###", CultureInfo.InvariantCulture)}");
+                var northCrystal = IslandProfile.North.InitialCrystal;
+                Send($"/vnav moveto {northCrystal.X.ToString("0.###", CultureInfo.InvariantCulture)} {northCrystal.Y.ToString("0.###", CultureInfo.InvariantCulture)} {northCrystal.Z.ToString("0.###", CultureInfo.InvariantCulture)}");
                 towerPhase = TowerPhase.CrystalTeleport;
                 crystalMoveDeadline = DateTime.UtcNow + CrystalMoveTimeout;
                 nextCrystalMoveCheckAt = DateTime.UtcNow;
@@ -1166,14 +1199,14 @@ public sealed class Plugin : IDalamudPlugin
 
     private unsafe void UpdateCurrencyCounts()
     {
-        silverCurrency = GetInventoryCount(SilverCurrencyItemId);
-        goldCurrency = GetInventoryCount(GoldCurrencyItemId);
+        silverCurrency = GetInventoryCount(activeProfile.SilverCurrencyItemId);
+        goldCurrency = GetInventoryCount(activeProfile.GoldCurrencyItemId);
         if (!problemCheckBaselineReady)
         {
             lastProblemCheckSilver = silverCurrency;
             problemCheckBaselineReady = true;
         }
-        log.Information($"钱币检测：白银币 {silverCurrency}/{CurrencyCap}，白金币 {goldCurrency}/{CurrencyCap}");
+        log.Information($"钱币检测：{activeProfile.SilverCurrencyName} {silverCurrency}/{CurrencyCap}，{activeProfile.GoldCurrencyName} {goldCurrency}/{CurrencyCap}");
     }
 
     private void CheckSilverCurrencyHealth()
@@ -1235,7 +1268,7 @@ public sealed class Plugin : IDalamudPlugin
         initialCurrencyCheckPending = true;
         initialCurrencyCheckSource = source;
         pendingCurrencyCheckAt = DateTime.UtcNow + delay;
-        status = $"{source}：准备检测白银币和白金币...";
+        status = $"{source}：准备检测{activeProfile.SilverCurrencyName}和{activeProfile.GoldCurrencyName}...";
         log.Information($"{source}流程：先检测钱币并决定是否购买，未触发购买后再进行魔寻宝");
     }
 
@@ -1268,7 +1301,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         var requests = CreateCurrencyPurchaseRequests();
         if (requests.Count == 0) return false;
-        if (!currencyBuyer.Begin(requests)) return false;
+        if (!currencyBuyer.Begin(requests, activeProfile)) return false;
 
         if (bocchiEnabled) Send("/bocchiillegal off");
         bocchiEnabled = false;
@@ -1303,6 +1336,7 @@ public sealed class Plugin : IDalamudPlugin
         int triggerAmount)
     {
         if (mode == CurrencyPurchaseMode.None || currentAmount < triggerAmount) return;
+        if (mode == CurrencyPurchaseMode.UltimateFixative && !activeProfile.SupportsFixative) return;
         var cost = GetPurchaseCost(kind, mode);
         var configuredQuantity = GetConfiguredQuantity(kind, mode);
         var quantity = Math.Min(configuredQuantity, currentAmount / cost);
@@ -1311,9 +1345,9 @@ public sealed class Plugin : IDalamudPlugin
         var isSilver = kind == CurrencyKind.Silver;
         requests.Add(new CurrencyPurchaseRequest(
             kind,
-            isSilver ? "十二城邦白银币" : "十二城邦白金币",
-            isSilver ? SilverCurrencyItemId : GoldCurrencyItemId,
-            isSilver ? 0x1B0614u : 0x1B0615u,
+            isSilver ? activeProfile.SilverCurrencyName : activeProfile.GoldCurrencyName,
+            isSilver ? activeProfile.SilverCurrencyItemId : activeProfile.GoldCurrencyItemId,
+            isSilver ? activeProfile.SilverEventId : activeProfile.GoldEventId,
             mode == CurrencyPurchaseMode.OldCoffer ? "钱箱" : "终极固定剂",
             mode == CurrencyPurchaseMode.OldCoffer ? OldCofferItemId : UltimateFixativeItemId,
             cost,
@@ -1340,9 +1374,9 @@ public sealed class Plugin : IDalamudPlugin
         nextAllowedScanAt = DateTime.MinValue;
         if (!IsIsland())
         {
-            Send("/pdrfe ocn");
+            Send(activeProfile.EntryCommand);
             waitingForEntry = true;
-            status = "自动购买完成，正在重新进入蜃景幻界新月岛 北征之章...";
+            status = $"自动购买完成，正在重新进入{activeProfile.ChapterName}...";
         }
         else
         {
@@ -1370,6 +1404,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private void NormalizePurchaseConfig()
     {
+        if (config.IslandTarget != IslandTarget.SouthHorn)
+            config.IslandTarget = IslandTarget.NorthHorn;
+        ClampFixativeIfUnsupported();
         config.SilverTriggerAmount = Math.Clamp(config.SilverTriggerAmount, 0, CurrencyCap);
         config.GoldTriggerAmount = Math.Clamp(config.GoldTriggerAmount, 0, CurrencyCap);
         config.SilverCofferQuantity = Math.Clamp(config.SilverCofferQuantity, 1, Math.Max(1, CurrencyCap / 40));
@@ -1446,11 +1483,14 @@ public sealed class Plugin : IDalamudPlugin
             config.NotifyTreasureComplete = notifyComplete;
             config.Save();
         }
-        var notifyTowerWeather = config.NotifyTowerWeather;
-        if (ImGui.Checkbox("魔之塔蜃景天气出现时通知", ref notifyTowerWeather))
+        if (activeProfile.SupportsTower)
         {
-            config.NotifyTowerWeather = notifyTowerWeather;
-            config.Save();
+            var notifyTowerWeather = config.NotifyTowerWeather;
+            if (ImGui.Checkbox("魔之塔蜃景天气出现时通知", ref notifyTowerWeather))
+            {
+                config.NotifyTowerWeather = notifyTowerWeather;
+                config.Save();
+            }
         }
 
         if (ImGui.Button("发送通知测试"))
@@ -1465,7 +1505,10 @@ public sealed class Plugin : IDalamudPlugin
     private void DrawCurrencyPurchaseConfig(CurrencyKind kind)
     {
         var silverKind = kind == CurrencyKind.Silver;
-        var name = silverKind ? "白银币" : "白金币";
+        var name = silverKind ? activeProfile.SilverCurrencyName : activeProfile.GoldCurrencyName;
+        var shortName = silverKind ? "银币" : "金币";
+        if (activeProfile.SupportsFixative)
+            shortName = silverKind ? "白银币" : "白金币";
         var currentAmount = silverKind ? silverCurrency : goldCurrency;
         var mode = silverKind ? config.SilverPurchaseMode : config.GoldPurchaseMode;
         var trigger = silverKind ? config.SilverTriggerAmount : config.GoldTriggerAmount;
@@ -1478,14 +1521,17 @@ public sealed class Plugin : IDalamudPlugin
 
         ImGui.Text($"{name}：{(currentAmount >= 0 ? currentAmount.ToString() : "未检测")}/{CurrencyCap}");
         ImGui.SetNextItemWidth(190f);
-        if (ImGui.BeginCombo($"行为##{name}PurchaseMode", modeText))
+        if (ImGui.BeginCombo($"行为##{shortName}PurchaseMode", modeText))
         {
             foreach (var candidate in Enum.GetValues<CurrencyPurchaseMode>())
             {
+                if (candidate == CurrencyPurchaseMode.UltimateFixative && !activeProfile.SupportsFixative)
+                    continue;
+
                 var label = candidate switch
                 {
                     CurrencyPurchaseMode.OldCoffer => "自动买钱箱",
-                    CurrencyPurchaseMode.UltimateFixative => "自动买终极固定剂",
+                    CurrencyPurchaseMode.UltimateFixative => "自动买终极固定剂（仅北征）",
                     _ => "不购买",
                 };
                 if (ImGui.Selectable(label, candidate == mode))
@@ -1504,7 +1550,7 @@ public sealed class Plugin : IDalamudPlugin
         ImGui.BeginDisabled(mode == CurrencyPurchaseMode.None);
         var cost = GetPurchaseCost(kind, mode);
         ImGui.SetNextItemWidth(120f);
-        if (ImGui.InputInt($"触发钱币数量##{name}Trigger", ref trigger))
+        if (ImGui.InputInt($"触发钱币数量##{shortName}Trigger", ref trigger))
         {
             trigger = Math.Clamp(trigger, cost, CurrencyCap);
             if (silverKind) config.SilverTriggerAmount = trigger;
@@ -1516,7 +1562,7 @@ public sealed class Plugin : IDalamudPlugin
         var quantity = GetConfiguredQuantity(kind, mode);
         var maxAtTrigger = Math.Max(1, trigger / cost);
         ImGui.SetNextItemWidth(120f);
-        if (ImGui.InputInt($"购买数量##{name}Quantity", ref quantity))
+        if (ImGui.InputInt($"购买数量##{shortName}Quantity", ref quantity))
         {
             quantity = Math.Clamp(quantity, 1, maxAtTrigger);
             SetConfiguredQuantity(kind, mode, quantity);
@@ -1550,10 +1596,34 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    private void DrawIslandTargetConfig()
+    {
+        ImGui.Text("目标岛屿");
+        if (ImGui.RadioButton("北征之章（北岛）##IslandNorth", config.IslandTarget == IslandTarget.NorthHorn))
+        {
+            config.IslandTarget = IslandTarget.NorthHorn;
+            RefreshProfile();
+            config.Save();
+        }
+        ImGui.SameLine();
+        if (ImGui.RadioButton("南征之章（南岛）##IslandSouth", config.IslandTarget == IslandTarget.SouthHorn))
+        {
+            config.IslandTarget = IslandTarget.SouthHorn;
+            RefreshProfile();
+            config.Save();
+        }
+        ImGui.TextWrapped($"进岛指令：{activeProfile.EntryCommand}");
+        if (!activeProfile.SupportsFixative)
+            ImGui.TextWrapped("南征之章仅支持自动购买古旧钱箱，不支持终极固定剂。");
+    }
+
     public void DrawStatus()
     {
+        RefreshProfile();
         ImGui.Text($"状态：{status}");
-        ImGui.Text($"当前区域 ID：{clientState.TerritoryType}（目标 1346）");
+        ImGui.Text($"当前区域 ID：{clientState.TerritoryType}（目标 {activeProfile.TerritoryId}，{activeProfile.ChapterName}）");
+        ImGui.Spacing();
+        DrawIslandTargetConfig();
         ImGui.Spacing();
         if (ImGui.CollapsingHeader("使用说明"))
         {
@@ -1620,36 +1690,39 @@ public sealed class Plugin : IDalamudPlugin
         ImGui.SameLine();
         if (ImGui.Button("关闭窗口")) mainWindow.IsOpen = false;
         ImGui.Spacing();
-        ImGui.SetNextItemOpen(config.AutoGoTowerExpanded, ImGuiCond.Once);
-        var towerExpanded = ImGui.CollapsingHeader("自动前往魔之塔设置");
-        if (towerExpanded != config.AutoGoTowerExpanded)
+        if (activeProfile.SupportsTower)
         {
-            config.AutoGoTowerExpanded = towerExpanded;
-            config.Save();
-        }
-        if (towerExpanded)
-        {
-            ImGui.TextWrapped("注意：该项功能只会在蜃景天气出现时停止插件功能前往魔之塔进入区域，不会自动进行魔之塔战斗，后续流程需要手动或者由其他插件接管。");
-            ImGui.TextWrapped("如果你不知道上述是什么意思，则不要开启此功能，也不要就此功能进行任何反馈。");
-            var autoGoTower = config.AutoGoTower;
-            if (ImGui.Checkbox("蜃景天气出现时自动前往魔之塔区域", ref autoGoTower))
+            ImGui.SetNextItemOpen(config.AutoGoTowerExpanded, ImGuiCond.Once);
+            var towerExpanded = ImGui.CollapsingHeader("自动前往魔之塔设置");
+            if (towerExpanded != config.AutoGoTowerExpanded)
             {
-                config.AutoGoTower = autoGoTower;
+                config.AutoGoTowerExpanded = towerExpanded;
                 config.Save();
-                if (autoGoTower && running && IsIsland())
+            }
+            if (towerExpanded)
+            {
+                ImGui.TextWrapped("注意：该项功能只会在蜃景天气出现时停止插件功能前往魔之塔进入区域，不会自动进行魔之塔战斗，后续流程需要手动或者由其他插件接管。");
+                ImGui.TextWrapped("如果你不知道上述是什么意思，则不要开启此功能，也不要就此功能进行任何反馈。");
+                var autoGoTower = config.AutoGoTower;
+                if (ImGui.Checkbox("蜃景天气出现时自动前往魔之塔区域", ref autoGoTower))
                 {
-                    weatherCheckPending = true;
-                    nextWeatherCheckAt = DateTime.UtcNow;
+                    config.AutoGoTower = autoGoTower;
+                    config.Save();
+                    if (autoGoTower && running && IsIsland())
+                    {
+                        weatherCheckPending = true;
+                        nextWeatherCheckAt = DateTime.UtcNow;
+                    }
+                }
+                var notifyTowerArrival = config.NotifyTowerArrival;
+                if (ImGui.Checkbox("到达魔之塔进入区域后发送通知", ref notifyTowerArrival))
+                {
+                    config.NotifyTowerArrival = notifyTowerArrival;
+                    config.Save();
                 }
             }
-            var notifyTowerArrival = config.NotifyTowerArrival;
-            if (ImGui.Checkbox("到达魔之塔进入区域后发送通知", ref notifyTowerArrival))
-            {
-                config.NotifyTowerArrival = notifyTowerArrival;
-                config.Save();
-            }
+            ImGui.Spacing();
         }
-        ImGui.Spacing();
         if (ImGui.CollapsingHeader("Debug"))
         {
             if (ImGui.Button("直接开始寻宝流程（测试用）"))
@@ -1659,7 +1732,7 @@ public sealed class Plugin : IDalamudPlugin
                 copper = 0;
                 BeginTreasureProcedure();
             }
-            if (ImGui.Button("直接开始前往魔之塔流程（测试用）"))
+            if (activeProfile.SupportsTower && ImGui.Button("直接开始前往魔之塔流程（测试用）"))
             {
                 if (!running) running = true;
                 BeginTowerProcedureForTest();
@@ -1705,6 +1778,7 @@ public sealed class Plugin : IDalamudPlugin
     public sealed class PluginConfig : IPluginConfiguration
     {
         public int Version { get; set; } = 2;
+        public IslandTarget IslandTarget { get; set; } = IslandTarget.NorthHorn;
         public string CombatJob { get; set; } = "辅助白魔法师";
         public string DiscardPreset { get; set; } = "";
         public bool AutoPurchaseExpanded { get; set; } = true;
