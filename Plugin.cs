@@ -54,6 +54,7 @@ public sealed partial class Plugin : IDalamudPlugin
     private static readonly TimeSpan CurrencyPurchaseRetryInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan CurrencyPurchaseRetryTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan CurrencyPurchaseMovePollInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan CurrencyPurchaseMoveStartDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan TreasureCommandDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan LeaveDutyDelay = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ProblemCheckInterval = TimeSpan.FromMinutes(12);
@@ -97,6 +98,7 @@ public sealed partial class Plugin : IDalamudPlugin
     private DateTime purchaseRetryDeadline = DateTime.MinValue;
     private DateTime currencyPurchaseMoveDeadline = DateTime.MinValue;
     private DateTime nextCurrencyPurchaseMoveCheckAt = DateTime.MinValue;
+    private DateTime currencyPurchaseMoveStartAt = DateTime.MinValue;
     private DateTime islandSwitchEntryAt = DateTime.MinValue;
     private bool initialCurrencyCheckPending;
     private string initialCurrencyCheckSource = "首次进岛";
@@ -251,7 +253,7 @@ public sealed partial class Plugin : IDalamudPlugin
         bocchiEnabled = false;
         running = currencyPurchaseMoveActive = islandSwitchPending = waitingForEntry = entrySyncMessageSeen = waitingForScan = initialCurrencyCheckPending = false;
         pendingScanAt = pendingBocchiAt = pendingReturnScanAt = pendingCurrencyCheckAt = pendingPurchaseAt = nextAllowedScanAt = DateTime.MinValue;
-        purchaseRetryDeadline = currencyPurchaseMoveDeadline = nextCurrencyPurchaseMoveCheckAt = islandSwitchEntryAt = DateTime.MinValue;
+        purchaseRetryDeadline = currencyPurchaseMoveDeadline = nextCurrencyPurchaseMoveCheckAt = currencyPurchaseMoveStartAt = islandSwitchEntryAt = DateTime.MinValue;
         treasurePhase = TreasurePhase.None;
         treasurePhaseAt = DateTime.MinValue;
         towerPhase = TowerPhase.None;
@@ -1455,10 +1457,12 @@ public sealed partial class Plugin : IDalamudPlugin
             var crystal = activeProfile.CrystalMoveTarget;
             Send($"/vnav moveto {crystal.X.ToString("0.###", CultureInfo.InvariantCulture)} {crystal.Y.ToString("0.###", CultureInfo.InvariantCulture)} {crystal.Z.ToString("0.###", CultureInfo.InvariantCulture)}");
             currencyPurchaseMoveActive = true;
-            currencyPurchaseMoveDeadline = DateTime.UtcNow + CrystalMoveTimeout;
+            var now = DateTime.UtcNow;
+            currencyPurchaseMoveStartAt = now + CurrencyPurchaseMoveStartDelay;
+            currencyPurchaseMoveDeadline = now + CurrencyPurchaseMoveStartDelay + CrystalMoveTimeout;
             nextCurrencyPurchaseMoveCheckAt = DateTime.UtcNow;
             status = "钱币达到购买条件，正在前往大水晶...";
-            log.Information($"{activeProfile.ChapterName}自动购买：开始前往大水晶，目标坐标 {crystal}");
+            log.Information($"{activeProfile.ChapterName}自动购买：已停止 BOCCHI，{CurrencyPurchaseMoveStartDelay.TotalSeconds:0.#} 秒后开始前往大水晶，目标坐标 {crystal}");
             return;
         }
 
@@ -1472,6 +1476,15 @@ public sealed partial class Plugin : IDalamudPlugin
             Stop($"已离开{activeProfile.ChapterName}，无法继续自动购买");
             return;
         }
+        if (DateTime.UtcNow < currencyPurchaseMoveStartAt) return;
+        if (currencyPurchaseMoveStartAt != DateTime.MinValue)
+        {
+            var crystal = activeProfile.CrystalMoveTarget;
+            Send($"/vnav moveto {crystal.X.ToString("0.###", CultureInfo.InvariantCulture)} {crystal.Y.ToString("0.###", CultureInfo.InvariantCulture)} {crystal.Z.ToString("0.###", CultureInfo.InvariantCulture)}");
+            currencyPurchaseMoveStartAt = DateTime.MinValue;
+            nextCurrencyPurchaseMoveCheckAt = DateTime.UtcNow;
+            log.Information($"{activeProfile.ChapterName}自动购买：已开始前往大水晶，目标坐标 {crystal}");
+        }
         if (DateTime.UtcNow < nextCurrencyPurchaseMoveCheckAt) return;
         nextCurrencyPurchaseMoveCheckAt = DateTime.UtcNow + CurrencyPurchaseMovePollInterval;
 
@@ -1479,7 +1492,7 @@ public sealed partial class Plugin : IDalamudPlugin
         {
             Send("/vnav stop");
             currencyPurchaseMoveActive = false;
-            currencyPurchaseMoveDeadline = nextCurrencyPurchaseMoveCheckAt = DateTime.MinValue;
+            currencyPurchaseMoveDeadline = nextCurrencyPurchaseMoveCheckAt = currencyPurchaseMoveStartAt = DateTime.MinValue;
             log.Information($"{activeProfile.ChapterName}自动购买：已到达大水晶，准备开始购买");
             ScheduleCurrencyPurchaseStart();
             return;
@@ -1535,7 +1548,7 @@ public sealed partial class Plugin : IDalamudPlugin
     {
         pendingPurchaseAt = purchaseRetryDeadline = DateTime.MinValue;
         currencyPurchaseMoveActive = false;
-        currencyPurchaseMoveDeadline = nextCurrencyPurchaseMoveCheckAt = DateTime.MinValue;
+        currencyPurchaseMoveDeadline = nextCurrencyPurchaseMoveCheckAt = currencyPurchaseMoveStartAt = DateTime.MinValue;
         currencyPurchaseStatus = success ? message : $"自动购买失败：{message}";
         if (!running) return;
         if (!success)
