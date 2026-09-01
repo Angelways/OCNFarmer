@@ -22,8 +22,10 @@ internal sealed class IslandProfile
     public required string[] ShardKeywords { get; init; }
     public required uint SilverCurrencyItemId { get; init; }
     public required uint GoldCurrencyItemId { get; init; }
+    public required uint HealthCheckCurrencyItemId { get; init; }
     public required string SilverCurrencyName { get; init; }
     public required string GoldCurrencyName { get; init; }
+    public required string HealthCheckCurrencyName { get; init; }
     public required uint SilverEventId { get; init; }
     public required uint GoldEventId { get; init; }
     public bool SupportsFixative { get; init; }
@@ -40,8 +42,10 @@ internal sealed class IslandProfile
         ShardKeywords = ["妖火", "城塞", "圣堂", "遗迹", "街道"],
         SilverCurrencyItemId = 51975,
         GoldCurrencyItemId = 51976,
+        HealthCheckCurrencyItemId = 51975,
         SilverCurrencyName = "十二城邦白银币",
         GoldCurrencyName = "十二城邦白金币",
+        HealthCheckCurrencyName = "十二城邦白银币",
         SilverEventId = 0x1B0614,
         GoldEventId = 0x1B0615,
         SupportsFixative = true,
@@ -59,8 +63,10 @@ internal sealed class IslandProfile
         ShardKeywords = ["遗迹", "洞窟", "古树", "石塔"],
         SilverCurrencyItemId = 45043,
         GoldCurrencyItemId = 45044,
+        HealthCheckCurrencyItemId = 45043,
         SilverCurrencyName = "十二城邦银币",
         GoldCurrencyName = "十二城邦金币",
+        HealthCheckCurrencyName = "十二城邦银币",
         SilverEventId = 0x1B05B0,
         GoldEventId = 0x1B05B2,
         SupportsFixative = false,

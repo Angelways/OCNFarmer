@@ -22,7 +22,7 @@ namespace NorthIslandChestPlugin;
 
 public sealed partial class Plugin : IDalamudPlugin
 {
-    private static readonly string PluginVersion = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "1.9.0.0";
+    private static readonly string PluginVersion = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "1.9.1.0";
     private static readonly string[] CombatJobs =
     {
         "辅助白魔法师", "辅助武士", "辅助猎人", "辅助武僧", "辅助狂战士",
@@ -119,7 +119,7 @@ public sealed partial class Plugin : IDalamudPlugin
     private readonly Dictionary<string, int> treasureLoot = new(StringComparer.Ordinal);
     private string status = "未运行";
     private DateTime nextProblemCheckAt = DateTime.MinValue;
-    private int lastProblemCheckSilver = -1;
+    private int lastProblemCheckCurrency = -1;
     private bool problemCheckBaselineReady;
     private TowerPhase towerPhase;
     private DateTime towerPhaseAt = DateTime.MinValue;
@@ -257,7 +257,7 @@ public sealed partial class Plugin : IDalamudPlugin
         treasureMountDeadline = nextTreasureMountAttemptAt = DateTime.MinValue;
         towerResumeDeadline = DateTime.MinValue;
         nextProblemCheckAt = DateTime.MinValue;
-        lastProblemCheckSilver = -1;
+        lastProblemCheckCurrency = -1;
         problemCheckBaselineReady = false;
         status = message;
     }
@@ -322,7 +322,7 @@ public sealed partial class Plugin : IDalamudPlugin
             return;
         }
 
-        CheckSilverCurrencyHealth();
+        CheckCurrencyHealth();
         if (!IsIsland())
         {
             if (bocchiEnabled) Send("/bocchiillegal off");
@@ -933,7 +933,7 @@ public sealed partial class Plugin : IDalamudPlugin
         ApplySelectedProfile();
         silver = copper = silverCurrency = goldCurrency = -1;
         currencyPurchaseStatus = string.Empty;
-        lastProblemCheckSilver = -1;
+        lastProblemCheckCurrency = -1;
         problemCheckBaselineReady = false;
         config.Save();
     }
@@ -1263,13 +1263,13 @@ public sealed partial class Plugin : IDalamudPlugin
         goldCurrency = GetInventoryCount(activeProfile.GoldCurrencyItemId);
         if (!problemCheckBaselineReady)
         {
-            lastProblemCheckSilver = silverCurrency;
+            lastProblemCheckCurrency = GetInventoryCount(activeProfile.HealthCheckCurrencyItemId);
             problemCheckBaselineReady = true;
         }
         log.Information($"钱币检测：{activeProfile.SilverCurrencyName} {silverCurrency}/{CurrencyCap}，{activeProfile.GoldCurrencyName} {goldCurrency}/{CurrencyCap}");
     }
 
-    private void CheckSilverCurrencyHealth()
+    private void CheckCurrencyHealth()
     {
         if (!config.NotifyProblem || !running || !IsIsland() || treasurePhase != TreasurePhase.None ||
             currencyBuyer.IsBusy || nextProblemCheckAt == DateTime.MinValue || DateTime.UtcNow < nextProblemCheckAt)
@@ -1280,9 +1280,11 @@ public sealed partial class Plugin : IDalamudPlugin
         UpdateCurrencyCounts();
         if (!hadBaseline) return;
 
-        if (silverCurrency == lastProblemCheckSilver)
-            SendServerChanNotificationAsync("OCNFarmer可能遇到问题", "长时间未检测到战斗行为，请注意接管。", "白银币停滞检测");
-        lastProblemCheckSilver = silverCurrency;
+        var healthCurrency = GetInventoryCount(activeProfile.HealthCheckCurrencyItemId);
+        log.Information($"战斗行为检测：{activeProfile.HealthCheckCurrencyName} {healthCurrency}（上次检测 {lastProblemCheckCurrency}）");
+        if (healthCurrency == lastProblemCheckCurrency)
+            SendServerChanNotificationAsync("OCNFarmer可能遇到问题", "长时间未检测到战斗行为，请注意接管。", $"{activeProfile.HealthCheckCurrencyName}停滞检测");
+        lastProblemCheckCurrency = healthCurrency;
     }
 
     private void SendServerChanNotificationAsync(string title, string desp, string reason)
@@ -1473,7 +1475,7 @@ public sealed partial class Plugin : IDalamudPlugin
         }
 
         silverCurrency = goldCurrency = -1;
-        lastProblemCheckSilver = -1;
+        lastProblemCheckCurrency = -1;
         problemCheckBaselineReady = false;
         nextProblemCheckAt = DateTime.UtcNow + ProblemCheckInterval;
         silver = copper = -1;

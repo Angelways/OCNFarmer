@@ -190,15 +190,11 @@ public sealed partial class Plugin
         var windowSize = ImGui.GetWindowSize();
         var style = ImGui.GetStyle();
         const float buttonWidth = 24f;
+        const float defaultTitleBarButtonsWidth = 82f;
         var spacing = style.ItemSpacing.X;
         var totalWidth = buttonWidth * 3f + spacing * 2f;
-        var titleWidth = ImGui.CalcTextSize($"OCNFarmer v{PluginVersion}").X + style.FramePadding.X * 3f;
-        var centeredX = windowPosition.X + (windowSize.X - totalWidth) * 0.5f;
-        var minimumX = windowPosition.X + titleWidth;
-        var maximumX = windowPosition.X + windowSize.X - totalWidth - 30f;
-        var buttonX = maximumX >= minimumX
-            ? Math.Clamp(centeredX, minimumX, maximumX)
-            : MathF.Max(windowPosition.X + 8f, maximumX);
+        var maximumX = windowPosition.X + windowSize.X - totalWidth - defaultTitleBarButtonsWidth;
+        var buttonX = MathF.Max(windowPosition.X + 8f, maximumX);
         var buttonHeight = MathF.Max(18f, ImGui.GetFrameHeight() - 2f);
         var buttonY = windowPosition.Y + 1f;
 
