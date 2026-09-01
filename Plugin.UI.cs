@@ -1,11 +1,13 @@
 using System.Diagnostics;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Utility;
 
 namespace NorthIslandChestPlugin;
 
 public sealed partial class Plugin
 {
+    private static readonly Vector2 DefaultFullWindowSize = new(980f, 760f);
     private static readonly Vector2 DefaultSimplifiedWindowSize = new(520f, 140f);
     private enum TitleBarIcon { Play, Stop, FullView, CompactView }
 
@@ -272,132 +274,407 @@ public sealed partial class Plugin
 
     public void DrawStatus()
     {
-        DrawTitleBarControls();
-        ImGui.Text($"状态：{status}");
-        if (config.SimplifiedUi)
+        DrawPureBlurBackground(0.82f, true);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(16f, 14f));
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(10f, 8f));
+        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 6f);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 6f);
+        ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0.025f, 0.03f, 0.035f, 0.72f));
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.03f, 0.04f, 0.045f, 0.2f));
+        ImGui.PushStyleColor(ImGuiCol.Header, new Vector4(0.16f, 0.18f, 0.2f, 0.96f));
+        ImGui.PushStyleColor(ImGuiCol.HeaderHovered, new Vector4(0.24f, 0.27f, 0.29f, 0.98f));
+        ImGui.PushStyleColor(ImGuiCol.HeaderActive, new Vector4(0.3f, 0.33f, 0.34f, 0.98f));
+        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.22f, 0.27f, 0.31f, 0.98f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.36f, 0.42f, 0.44f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.78f, 0.6f, 0.16f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.CheckMark, new Vector4(0.22f, 0.86f, 0.8f, 1f));
+        ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 0f);
+
+        try
         {
-            ImGui.Text($"目标副本：{activeProfile.ChapterName}");
-            ImGui.Text($"插件运行状态：{(running ? "运行中" : "已停止")}");
+            DrawTitleBarControls();
+            if (config.SimplifiedUi)
+            {
+                DrawSimplifiedHeader();
+                return;
+            }
+
+            DrawBHeader();
+            DrawBStatusSummary();
+            ImGui.Spacing();
+
+            var available = ImGui.GetContentRegionAvail();
+            var workspaceSize = new Vector2(MathF.Max(0f, available.X - 2f), available.Y);
+            ImGui.BeginChild("BWorkspace", workspaceSize, false);
+            ImGui.BeginChild("BSettings", new Vector2(MathF.Max(0f, workspaceSize.X - 28f), -1f), false);
+            DrawBConfigurationPanel();
+            ImGui.EndChild();
+            ImGui.EndChild();
+        }
+        finally
+        {
+            ImGui.PopStyleVar();
+            ImGui.PopStyleColor(9);
+            ImGui.PopStyleVar(4);
+        }
+    }
+
+    private void DrawSimplifiedHeader()
+    {
+        ImGui.TextColored(new Vector4(0.95f, 0.88f, 0.02f, 1f), "// OCNFarmer");
+        ImGui.SameLine();
+        ImGui.Text($"银箱 {Math.Max(0, silver):00}/{MaxSilver:00}  ·  铜箱 {Math.Max(0, copper):00}/{MaxCopper:00}");
+        ImGui.Spacing();
+        ImGui.TextColored(running ? new Vector4(0.28f, 0.9f, 0.72f, 1f) : new Vector4(0.65f, 0.67f, 0.68f, 1f), running ? "● 运行中" : "○ 已停止");
+        ImGui.SameLine();
+        ImGui.Text($"当前选择模式：{activeProfile.ChapterName}");
+    }
+
+    private static void DrawPureBlurBackground(float strength, bool border)
+    {
+        if (ImGui.GetWindowViewport().ID != ImGui.GetMainViewport().ID)
+            return;
+
+        var drawList = ImGui.GetWindowDrawList();
+        var min = ImGui.GetWindowPos();
+        var max = min + ImGui.GetWindowSize();
+        var rounding = 4f * ImGuiHelpers.GlobalScale;
+        ImGuiHelpers.PrependBlurBehind(
+            drawList,
+            min,
+            max,
+            strength,
+            rounding,
+            tintColor: new Vector4(0f, 0f, 0f, 0f),
+            luminosityColor: new Vector4(0f, 0f, 0f, 0f),
+            noiseOpacity: 0f);
+
+        if (border)
+        {
+            drawList.AddRect(
+                min,
+                max,
+                ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.24f)),
+                rounding,
+                ImDrawFlags.RoundCornersAll,
+                1.1f * ImGuiHelpers.GlobalScale);
+        }
+    }
+
+    private void DrawBHeader()
+    {
+        ImGui.BeginGroup();
+        ImGui.TextColored(new Vector4(0.95f, 0.88f, 0.02f, 1f), "// OCNFarmer");
+        ImGui.TextDisabled($"OCFA Agent  /  v{PluginVersion}");
+        ImGui.EndGroup();
+        ImGui.SameLine();
+        ImGui.TextColored(running ? new Vector4(0.28f, 0.9f, 0.72f, 1f) : new Vector4(0.65f, 0.67f, 0.68f, 1f), running ? "● 运行中" : "○ 已停止");
+        ImGui.SameLine();
+        ImGui.TextDisabled($"当前选择模式 {activeProfile.ChapterName}");
+        ImGui.Separator();
+    }
+
+    private void DrawBStatusSummary()
+    {
+        ImGui.Indent(8f);
+        if (!ImGui.BeginTable("BStatusSummary", 4, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.BordersInnerV))
+        {
+            ImGui.Unindent(8f);
             return;
         }
+        ImGui.TableSetupColumn("BStatusMain", ImGuiTableColumnFlags.WidthFixed, 280f);
+        ImGui.TableSetupColumn("BMode", ImGuiTableColumnFlags.WidthFixed, 220f);
+        ImGui.TableSetupColumn("BSilver", ImGuiTableColumnFlags.WidthFixed, 105f);
+        ImGui.TableSetupColumn("BCopper", ImGuiTableColumnFlags.WidthFixed, 105f);
+        ImGui.TableNextRow();
+        ImGui.TableNextColumn();
+        ImGui.TextDisabled("当前任务");
+        ImGui.TextColored(new Vector4(0.95f, 0.88f, 0.02f, 1f), status);
+        ImGui.TableNextColumn();
+        ImGui.Text("寻宝副本选择");
+        var locked = IsProfileSelectionLocked();
+        ImGui.BeginDisabled(locked);
+        ImGui.PushStyleColor(ImGuiCol.FrameBgActive, new Vector4(0.08f, 0.58f, 0.56f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, new Vector4(0.1f, 0.4f, 0.41f, 1f));
+        if (ImGui.RadioButton("南征之章（南岛）##SummarySouth", config.IslandTarget == IslandTarget.SouthHorn))
+            SelectIslandTarget(IslandTarget.SouthHorn);
+        if (ImGui.RadioButton("北征之章（北岛）##SummaryNorth", config.IslandTarget == IslandTarget.NorthHorn))
+            SelectIslandTarget(IslandTarget.NorthHorn);
+        ImGui.PopStyleColor(2);
+        ImGui.EndDisabled();
+        ImGui.TableNextColumn();
+        ImGui.TextDisabled("银箱");
+        ImGui.Text($"{(silver >= 0 ? silver : 0):00} / {MaxSilver:00}");
+        ImGui.TextDisabled("容量");
+        ImGui.TableNextColumn();
+        ImGui.TextDisabled("铜箱");
+        ImGui.Text($"{(copper >= 0 ? copper : 0):00} / {MaxCopper:00}");
+        ImGui.TextDisabled("容量");
+        ImGui.EndTable();
+        ImGui.Unindent(8f);
+    }
 
-        ImGui.Text($"当前区域 ID：{clientState.TerritoryType}（目标 {activeProfile.TerritoryId}，{activeProfile.ChapterName}）");
+    private void DrawBProgressRail()
+    {
+        ImGui.TextColored(new Vector4(0.95f, 0.88f, 0.02f, 1f), "自动流程");
+        ImGui.TextDisabled("自动流程路线");
         ImGui.Spacing();
-        DrawIslandTargetConfig();
+        var current = ResolveBProgressStep();
+        DrawBProgressStep("01 / 进入", "区域同步完成", current >= 1, current == 1);
+        DrawBProgressStep("02 / 检测", "钱币与宝箱", current >= 2, current == 2);
+        DrawBProgressStep("03 / 战斗", "BOCCHI 运行中", current >= 3, current == 3);
+        DrawBProgressStep("04 / 寻宝", "等待宝箱上限", current >= 4, current == 4);
+        DrawBProgressStep("05 / 重进", "自动循环", current >= 5, current == 5);
         ImGui.Spacing();
-        if (ImGui.CollapsingHeader("使用说明"))
+        ImGui.Separator();
+        ImGui.TextDisabled("当前区域 ID");
+        ImGui.Text($"{clientState.TerritoryType}");
+        ImGui.TextDisabled(activeProfile.TerritoryId == clientState.TerritoryType ? "区域匹配" : "区域不匹配");
+        ImGui.Spacing();
+        ImGui.TextDisabled("战斗辅助职业");
+        ImGui.Text(combatJob);
+        if (silver >= 0 && copper >= 0)
         {
-            ImGui.TextWrapped("使用说明");
-            ImGui.TextWrapped("1. 本插件功能为高危行为，如介意请勿使用；");
-            ImGui.TextWrapped("2. 使用本插件的必须条件：");
-            ImGui.TextWrapped("   1）启用 BOCCHI 及其配套插件，并且【关闭】自动轮换副本功能；");
-            ImGui.TextWrapped("   2）启用 Daily Routines 插件，并启用下列模块：");
-            ImGui.TextWrapped("      ① 蜃景幻界新月岛 助手");
-            ImGui.TextWrapped("      ② 更好的辅助职业列表");
-            ImGui.TextWrapped("      ③ 辅助职业切换指令");
-            ImGui.TextWrapped("      ④ 自动任务出发确认");
-            ImGui.TextWrapped("      ⑤ 即刻退本");
-            ImGui.TextWrapped("      ⑥ 特殊场景探索进入指令");
-            if (ImGui.Button("一键开启上述模块"))
-            {
-                Send("/pdr load OccultCrescentHelper");
-                Send("/pdr load BetterMKDSupportJobList");
-                Send("/pdr load PhantomJobSwitchCommand");
-                Send("/pdr load AutoCommenceDuty");
-                Send("/pdr load InstantLeaveDuty");
-                Send("/pdr load FieldEntryCommand");
-                status = "已发送一键开启 Daily Routines 模块指令";
-            }
+            ImGui.Spacing();
+            ImGui.TextDisabled("宝箱负载");
+            ImGui.Text($"银 {silver}/{MaxSilver}  ·  铜 {copper}/{MaxCopper}");
         }
+    }
+
+    private static void DrawBProgressStep(string title, string detail, bool complete, bool active)
+    {
+        var color = active
+            ? new Vector4(0.95f, 0.88f, 0.02f, 1f)
+            : complete
+                ? new Vector4(0.28f, 0.9f, 0.72f, 1f)
+                : new Vector4(0.47f, 0.49f, 0.5f, 1f);
+        ImGui.TextColored(color, active ? "◆" : complete ? "■" : "□");
+        ImGui.SameLine();
+        ImGui.TextColored(color, title);
+        ImGui.TextDisabled($"    {detail}");
         ImGui.Spacing();
-        ImGui.Text("选择 BOCCHI 战斗中的辅助职业");
-        if (ImGui.BeginCombo("##CombatJob", combatJob))
-        {
-            foreach (var job in CombatJobs)
-            {
-                var selected = job == combatJob;
-                if (ImGui.Selectable(job, selected))
-                {
-                    combatJob = job;
-                    config.CombatJob = combatJob;
-                    config.Save();
-                }
-                if (selected) ImGui.SetItemDefaultFocus();
-            }
-            ImGui.EndCombo();
-        }
-        ImGui.TextWrapped("注意：有些辅助职业的辅助技能可能与魔寻宝 CD 存在冲突，不接受因此所产生问题的反馈。默认选择的辅助白魔法师无此问题");
+    }
+
+    private int ResolveBProgressStep()
+    {
+        if (!running) return 0;
+        if (treasurePhase != TreasurePhase.None) return 4;
+        if (currencyBuyer.IsBusy || currencyPurchaseMoveActive) return 2;
+        if (waitingForEntry || islandSwitchPending) return 1;
+        if (initialScan || waitingForScan || pendingScanAt != DateTime.MinValue) return 2;
+        return 3;
+    }
+
+    private void DrawBConfigurationPanel()
+    {
+        ImGui.Dummy(new Vector2(0f, 6f));
+        DrawBSectionTitle("副本与战斗配置", "副本设置");
+        DrawBProfileConfig();
+        ImGui.Spacing();
+        DrawBUsageInstructions();
         ImGui.Spacing();
         DrawAutomaticPurchaseConfig();
         ImGui.Spacing();
         DrawServerChanConfig();
         ImGui.Spacing();
-        ImGui.TextWrapped("如需自动丢弃跑刀垃圾，请在此处填写DR自动丢弃物品模块的预设名称，留空则不启用");
-        ImGui.SetNextItemWidth(-1);
-        if (ImGui.InputText("##DiscardPreset", ref discardPreset, 128))
+        DrawBTowerConfig();
+        ImGui.Spacing();
+        DrawBDebug();
+        ImGui.Spacing();
+        if (!string.IsNullOrEmpty(treasureError))
+            ImGui.TextColored(new Vector4(1f, 0.3f, 0.3f, 1f), $"错误：{treasureError}");
+        DrawBFooter();
+    }
+
+    private static void DrawBSectionTitle(string title, string code)
+    {
+        ImGui.TextColored(new Vector4(0.95f, 0.88f, 0.02f, 1f), "◇");
+        ImGui.SameLine();
+        ImGui.Text(title);
+        ImGui.SameLine();
+        ImGui.TextDisabled(code);
+        ImGui.Separator();
+    }
+
+    private void DrawBProfileConfig()
+    {
+        if (ImGui.BeginTable("BProfileConfig", 2, ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.BordersInnerV))
         {
-            config.DiscardPreset = discardPreset;
+            ImGui.TableSetupColumn("BProfileLabel", ImGuiTableColumnFlags.WidthFixed, 150f);
+            ImGui.TableSetupColumn("BProfileValue", ImGuiTableColumnFlags.WidthStretch);
+            ImGui.TableNextRow(ImGuiTableRowFlags.None, ImGui.GetFrameHeight() + 8f);
+            ImGui.TableNextColumn();
+            ImGui.Text("战斗辅助职业");
+            ImGui.TableNextColumn();
+            ImGui.SetNextItemWidth(250f);
+            if (ImGui.BeginCombo("##BCombatJob", combatJob))
+            {
+                foreach (var job in CombatJobs)
+                {
+                    var selected = job == combatJob;
+                    if (ImGui.Selectable(job, selected))
+                    {
+                        combatJob = job;
+                        config.CombatJob = combatJob;
+                        config.Save();
+                    }
+                    if (selected) ImGui.SetItemDefaultFocus();
+                }
+                ImGui.EndCombo();
+            }
+            ImGui.SameLine(0f, 6f);
+            DrawInfoIcon(
+                "BCombatJobInfo",
+                "注意：有些辅助职业的辅助技能可能与魔寻宝 CD 存在冲突，不接受因此所产生问题的反馈。默认选择的辅助白魔法师无此问题");
+
+            ImGui.TableNextRow(ImGuiTableRowFlags.None, ImGui.GetFrameHeight() + 8f);
+            ImGui.TableNextColumn();
+            ImGui.Text("DR 自动丢弃预设");
+            ImGui.TableNextColumn();
+            ImGui.SetNextItemWidth(170f);
+            if (ImGui.InputText("##BDiscardPreset", ref discardPreset, 128))
+            {
+                config.DiscardPreset = discardPreset;
+                config.Save();
+            }
+            ImGui.SameLine(0f, 6f);
+            DrawInfoIcon(
+                "BDiscardPresetInfo",
+                "如需自动丢弃跑刀垃圾，请在此处填写 DR 自动丢弃物品模块的预设名称，留空则不启用");
+
+            ImGui.TableNextRow(ImGuiTableRowFlags.None, ImGui.GetFrameHeight() + 8f);
+            ImGui.TableNextColumn();
+            ImGui.Text("寻宝模式选择");
+            ImGui.TableNextColumn();
+            var treasureModeText = config.TreasureModeSelection == TreasureMode.XszRun ? "XSZ 跑刀" : "DR 跑刀";
+            ImGui.SetNextItemWidth(170f);
+            if (ImGui.BeginCombo("##BTreasureMode", treasureModeText))
+            {
+                if (ImGui.Selectable("DR 跑刀", config.TreasureModeSelection == TreasureMode.DrRun))
+                {
+                    config.TreasureModeSelection = TreasureMode.DrRun;
+                    config.Save();
+                }
+                if (ImGui.Selectable("XSZ 跑刀", config.TreasureModeSelection == TreasureMode.XszRun))
+                {
+                    config.TreasureModeSelection = TreasureMode.XszRun;
+                    config.Save();
+                }
+                ImGui.EndCombo();
+            }
+            ImGui.SameLine(0f, 6f);
+            DrawInfoIcon(
+                "BTreasureModeInfo",
+                "XSZ 跑刀为 XSZToolbox 测试码功能，如果你没有权限则不要选择这个模式。");
+            ImGui.EndTable();
+        }
+    }
+
+    private static void DrawInfoIcon(string id, string tooltip)
+    {
+        var size = new Vector2(20f, 20f);
+        ImGui.InvisibleButton($"##{id}", size);
+        var min = ImGui.GetItemRectMin();
+        var max = ImGui.GetItemRectMax();
+        var center = (min + max) * 0.5f;
+        var drawList = ImGui.GetWindowDrawList();
+        var accent = ImGui.GetColorU32(new Vector4(0.95f, 0.88f, 0.02f, 1f));
+        drawList.AddCircle(center, 8f, accent, 24, 1.4f);
+        var textSize = ImGui.CalcTextSize("!");
+        drawList.AddText(center - textSize * 0.5f, accent, "!");
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.BeginTooltip();
+            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + 360f);
+            ImGui.TextWrapped(tooltip);
+            ImGui.PopTextWrapPos();
+            ImGui.EndTooltip();
+        }
+    }
+
+    private void DrawBUsageInstructions()
+    {
+        ImGui.SetNextItemOpen(true, ImGuiCond.Once);
+        if (!ImGui.CollapsingHeader("使用说明")) return;
+        ImGui.TextWrapped("1. 本插件功能为高危行为，如介意请勿使用；");
+        ImGui.TextWrapped("2. 使用本插件的必须条件：");
+        ImGui.TextWrapped("   1）启用 BOCCHI 及其配套插件，并且【关闭】自动轮换副本功能；");
+        ImGui.TextWrapped("   2）启用 Daily Routines 插件，并启用下列模块：");
+        ImGui.TextWrapped("      ① 蜃景幻界新月岛 助手　② 更好的辅助职业列表　③ 辅助职业切换指令");
+        ImGui.TextWrapped("      ④ 自动任务出发确认　⑤ 即刻退本　⑥ 特殊场景探索进入指令");
+        if (ImGui.Button("一键开启上述模块"))
+        {
+            Send("/pdr load OccultCrescentHelper");
+            Send("/pdr load BetterMKDSupportJobList");
+            Send("/pdr load PhantomJobSwitchCommand");
+            Send("/pdr load AutoCommenceDuty");
+            Send("/pdr load InstantLeaveDuty");
+            Send("/pdr load FieldEntryCommand");
+            status = "已发送一键开启 Daily Routines 模块指令";
+        }
+    }
+
+    private void DrawBTowerConfig()
+    {
+        if (!activeProfile.SupportsTower) return;
+        ImGui.SetNextItemOpen(config.AutoGoTowerExpanded, ImGuiCond.Once);
+        var expanded = ImGui.CollapsingHeader("自动前往魔之塔设置");
+        if (expanded != config.AutoGoTowerExpanded)
+        {
+            config.AutoGoTowerExpanded = expanded;
             config.Save();
         }
-        ImGui.Spacing();
-        if (silver >= 0 && copper >= 0) ImGui.Text($"宝箱：银 {silver}/{MaxSilver}，铜 {copper}/{MaxCopper}");
-        if (!string.IsNullOrEmpty(treasureError)) ImGui.TextColored(new Vector4(1f, 0.3f, 0.3f, 1f), $"错误：{treasureError}");
+        if (!expanded) return;
+        ImGui.TextWrapped("注意：该项功能只会在蜃景天气出现时停止插件功能前往魔之塔进入区域，不会自动进行魔之塔战斗，后续流程需要手动或者由其他插件接管。");
+        ImGui.TextWrapped("如果你不知道上述是什么意思，则不要开启此功能，也不要就此功能进行任何反馈。");
+        var autoGoTower = config.AutoGoTower;
+        if (ImGui.Checkbox("蜃景天气出现时自动前往魔之塔区域", ref autoGoTower))
+        {
+            config.AutoGoTower = autoGoTower;
+            config.Save();
+            if (autoGoTower && running && IsIsland())
+            {
+                weatherCheckPending = true;
+                nextWeatherCheckAt = DateTime.UtcNow;
+            }
+        }
+        var notifyTowerArrival = config.NotifyTowerArrival;
+        if (ImGui.Checkbox("到达魔之塔进入区域后发送通知", ref notifyTowerArrival))
+        {
+            config.NotifyTowerArrival = notifyTowerArrival;
+            config.Save();
+        }
+    }
+
+    private void DrawBDebug()
+    {
+        if (!ImGui.CollapsingHeader("Debug")) return;
+        if (ImGui.Button("直接开始寻宝流程（测试用）"))
+        {
+            if (!running) running = true;
+            silver = MaxSilver;
+            copper = 0;
+            BeginTreasureProcedure();
+        }
+        if (activeProfile.SupportsTower && ImGui.Button("直接开始前往魔之塔流程（测试用）"))
+        {
+            if (!running) running = true;
+            BeginTowerProcedureForTest();
+        }
+    }
+
+    private void DrawBFooter()
+    {
+        ImGui.Separator();
+        ImGui.TextDisabled(running ? "运行中" : "已停止");
+        ImGui.SameLine();
         if (running)
         {
-            if (ImGui.Button("停止脚本")) Stop();
+            if (ImGui.Button("停止运行")) Stop();
         }
         else if (ImGui.Button("开始运行")) Start();
         ImGui.SameLine();
         if (ImGui.Button("关闭窗口")) mainWindow.IsOpen = false;
-        ImGui.Spacing();
-        if (activeProfile.SupportsTower)
-        {
-            ImGui.SetNextItemOpen(config.AutoGoTowerExpanded, ImGuiCond.Once);
-            var towerExpanded = ImGui.CollapsingHeader("自动前往魔之塔设置");
-            if (towerExpanded != config.AutoGoTowerExpanded)
-            {
-                config.AutoGoTowerExpanded = towerExpanded;
-                config.Save();
-            }
-            if (towerExpanded)
-            {
-                ImGui.TextWrapped("注意：该项功能只会在蜃景天气出现时停止插件功能前往魔之塔进入区域，不会自动进行魔之塔战斗，后续流程需要手动或者由其他插件接管。");
-                ImGui.TextWrapped("如果你不知道上述是什么意思，则不要开启此功能，也不要就此功能进行任何反馈。");
-                var autoGoTower = config.AutoGoTower;
-                if (ImGui.Checkbox("蜃景天气出现时自动前往魔之塔区域", ref autoGoTower))
-                {
-                    config.AutoGoTower = autoGoTower;
-                    config.Save();
-                    if (autoGoTower && running && IsIsland())
-                    {
-                        weatherCheckPending = true;
-                        nextWeatherCheckAt = DateTime.UtcNow;
-                    }
-                }
-                var notifyTowerArrival = config.NotifyTowerArrival;
-                if (ImGui.Checkbox("到达魔之塔进入区域后发送通知", ref notifyTowerArrival))
-                {
-                    config.NotifyTowerArrival = notifyTowerArrival;
-                    config.Save();
-                }
-            }
-            ImGui.Spacing();
-        }
-        if (ImGui.CollapsingHeader("Debug"))
-        {
-            if (ImGui.Button("直接开始寻宝流程（测试用）"))
-            {
-                if (!running) running = true;
-                silver = MaxSilver;
-                copper = 0;
-                BeginTreasureProcedure();
-            }
-            if (activeProfile.SupportsTower && ImGui.Button("直接开始前往魔之塔流程（测试用）"))
-            {
-                if (!running) running = true;
-                BeginTowerProcedureForTest();
-            }
-        }
     }
 
     private sealed class MainWindow : Dalamud.Interface.Windowing.Window
@@ -413,7 +690,15 @@ public sealed partial class Plugin
             var savedSize = GetSavedSize();
             if (savedSize.X > 0 && savedSize.Y > 0)
             {
+                if (!simplifiedMode && (savedSize.X < 820f || savedSize.Y < 620f))
+                    savedSize = DefaultFullWindowSize;
                 Size = savedSize;
+                SizeCondition = ImGuiCond.Always;
+                sizeRestoreFrames = 1;
+            }
+            else if (!simplifiedMode)
+            {
+                Size = DefaultFullWindowSize;
                 SizeCondition = ImGuiCond.Always;
                 sizeRestoreFrames = 1;
             }

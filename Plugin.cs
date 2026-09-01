@@ -20,6 +20,12 @@ using OmenTools.OmenService;
 
 namespace NorthIslandChestPlugin;
 
+public enum TreasureMode
+{
+    DrRun = 0,
+    XszRun = 1,
+}
+
 public sealed partial class Plugin : IDalamudPlugin
 {
     private static readonly string PluginVersion = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "1.9.1.0";
@@ -57,6 +63,8 @@ public sealed partial class Plugin : IDalamudPlugin
     private static readonly TimeSpan CrystalMoveTimeout = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan MountRetryInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MountRetryTimeout = TimeSpan.FromSeconds(12);
+    private static readonly TimeSpan XszPositionPollInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan XszNoMovementTimeout = TimeSpan.FromSeconds(10);
     private const uint MountRouletteGeneralActionSlot = 9;
     private const uint TowerWeatherId = 192;
     private static readonly Vector3 TowerCenter = new(-320f, 11.5f, 423f);
@@ -65,7 +73,7 @@ public sealed partial class Plugin : IDalamudPlugin
     private const float TowerStagingRadius = 2f;
     private static readonly HttpClient NotificationHttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
 
-    private enum TreasurePhase { None, FirstMove, FirstMoveDelay, FirstCrystal, FirstWaitPlayers, InnerMount, InnerStart, InnerReturn, SecondMove, SecondMoveDelay, SecondCrystal, SecondWaitPlayers, OuterMount, OuterStart, OuterReturn, LeaveDuty, Reentry }
+    private enum TreasurePhase { None, FirstMove, FirstMoveDelay, FirstCrystal, FirstWaitPlayers, XszRunning, InnerMount, InnerStart, InnerReturn, SecondMove, SecondMoveDelay, SecondCrystal, SecondWaitPlayers, OuterMount, OuterStart, OuterReturn, LeaveDuty, Reentry }
     private enum TowerPhase { None, MoveToCrystal, CrystalTeleport, MountToTower, MoveToStaging, StagingArrived, MoveToTower, Arrived, DismountBeforeResume }
 
     private readonly IChatGui chat;
@@ -140,6 +148,9 @@ public sealed partial class Plugin : IDalamudPlugin
     private DateTime treasureMountDeadline = DateTime.MinValue;
     private DateTime nextTreasureMountAttemptAt = DateTime.MinValue;
     private DateTime towerResumeDeadline = DateTime.MinValue;
+    private Vector3 xszLastPosition;
+    private DateTime xszLastPositionChangeAt = DateTime.MinValue;
+    private DateTime nextXszPositionCheckAt = DateTime.MinValue;
 
     public string Name => "OCNFarmer";
 
@@ -255,6 +266,8 @@ public sealed partial class Plugin : IDalamudPlugin
         crystalMoveDeadline = nextCrystalMoveCheckAt = DateTime.MinValue;
         mountRetryDeadline = nextMountRetryAt = DateTime.MinValue;
         treasureMountDeadline = nextTreasureMountAttemptAt = DateTime.MinValue;
+        xszLastPosition = default;
+        xszLastPositionChangeAt = nextXszPositionCheckAt = DateTime.MinValue;
         towerResumeDeadline = DateTime.MinValue;
         nextProblemCheckAt = DateTime.MinValue;
         lastProblemCheckCurrency = -1;
@@ -266,6 +279,7 @@ public sealed partial class Plugin : IDalamudPlugin
     {
         Stop("已紧急停止");
         Send("/bocchiillegal off");
+        Send("/xsz-occult-treasure stop");
         Send("/vnav stop");
         bocchiEnabled = false;
     }
@@ -651,7 +665,7 @@ public sealed partial class Plugin : IDalamudPlugin
 
     private void CaptureTreasureLoot(string text)
     {
-        if (treasurePhase is not (TreasurePhase.InnerStart or TreasurePhase.InnerReturn or TreasurePhase.OuterStart or TreasurePhase.OuterReturn) ||
+        if (treasurePhase is not (TreasurePhase.XszRunning or TreasurePhase.InnerStart or TreasurePhase.InnerReturn or TreasurePhase.OuterStart or TreasurePhase.OuterReturn) ||
             !text.Contains("获得了", StringComparison.Ordinal))
             return;
 
@@ -711,6 +725,8 @@ public sealed partial class Plugin : IDalamudPlugin
     {
         nextProblemCheckAt = DateTime.MinValue;
         treasureLoot.Clear();
+        xszLastPosition = default;
+        xszLastPositionChangeAt = nextXszPositionCheckAt = DateTime.MinValue;
         treasureError = "";
         treasurePhase = TreasurePhase.FirstMove;
         treasurePhaseAt = DateTime.UtcNow + TreasureCommandDelay;
@@ -751,6 +767,9 @@ public sealed partial class Plugin : IDalamudPlugin
             case TreasurePhase.FirstWaitPlayers:
             case TreasurePhase.SecondWaitPlayers:
                 CheckCrystalPlayers();
+                return;
+            case TreasurePhase.XszRunning:
+                UpdateXszTreasure();
                 return;
             case TreasurePhase.InnerMount:
                 UpdateTreasureMount(true);
@@ -862,6 +881,12 @@ public sealed partial class Plugin : IDalamudPlugin
             return;
         }
 
+        if (config.TreasureModeSelection == TreasureMode.XszRun)
+        {
+            BeginXszTreasure();
+            return;
+        }
+
         if (innerLeg)
         {
             treasurePhase = TreasurePhase.InnerMount;
@@ -878,6 +903,51 @@ public sealed partial class Plugin : IDalamudPlugin
             nextTreasureMountAttemptAt = DateTime.UtcNow + TimeSpan.FromSeconds(1);
             status = "周围 50 米内无玩家，1 秒后召唤随机坐骑...";
         }
+    }
+
+    private void BeginXszTreasure()
+    {
+        Send("/xsz-occult-treasure start");
+        var now = DateTime.UtcNow;
+        var player = objects.LocalPlayer;
+        xszLastPosition = player?.Position ?? default;
+        xszLastPositionChangeAt = now;
+        nextXszPositionCheckAt = now;
+        treasurePhase = TreasurePhase.XszRunning;
+        treasurePhaseAt = DateTime.MinValue;
+        status = "XSZ 跑刀进行中...";
+        log.Information($"已启动 XSZ 跑刀，每 {XszPositionPollInterval.TotalSeconds:0} 秒检测坐标，连续 {XszNoMovementTimeout.TotalSeconds:0} 秒无变化视为完成");
+    }
+
+    private void UpdateXszTreasure()
+    {
+        var now = DateTime.UtcNow;
+        if (now < nextXszPositionCheckAt) return;
+        nextXszPositionCheckAt = now + XszPositionPollInterval;
+
+        var player = objects.LocalPlayer;
+        if (player == null) return;
+
+        var position = player.Position;
+        if (Vector3.DistanceSquared(position, xszLastPosition) > 0.01f)
+        {
+            xszLastPosition = position;
+            xszLastPositionChangeAt = now;
+            log.Debug($"XSZ 跑刀坐标发生变化：{position}");
+            return;
+        }
+
+        if (now - xszLastPositionChangeAt < XszNoMovementTimeout) return;
+
+        log.Information($"XSZ 跑刀连续 {XszNoMovementTimeout.TotalSeconds:0} 秒未检测到坐标变化，视为寻宝完成");
+        if (config.NotifyTreasureComplete)
+            SendServerChanNotificationAsync("OCNFarmer已完成一次寻宝，请查阅战利品清单。", BuildTreasureLootMessage(), "XSZ 跑刀寻宝完成");
+
+        Send("/pdr leaveduty");
+        treasurePhase = TreasurePhase.Reentry;
+        treasurePhaseAt = now + LeaveDutyDelay;
+        xszLastPositionChangeAt = nextXszPositionCheckAt = DateTime.MinValue;
+        status = "XSZ 跑刀完成，即将自动重进副本";
     }
 
     private void UpdateTreasureMount(bool firstLeg)
@@ -1647,6 +1717,7 @@ public sealed partial class Plugin : IDalamudPlugin
     {
         public int Version { get; set; } = 3;
         public IslandTarget IslandTarget { get; set; } = IslandTarget.NorthHorn;
+        public TreasureMode TreasureModeSelection { get; set; } = TreasureMode.DrRun;
         public string CombatJob { get; set; } = "辅助白魔法师";
         public string DiscardPreset { get; set; } = "";
         public bool AutoPurchaseExpanded { get; set; } = true;
