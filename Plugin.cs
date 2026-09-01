@@ -1450,7 +1450,7 @@ public sealed partial class Plugin : IDalamudPlugin
         treasurePhaseAt = DateTime.MinValue;
         status = "钱币达到购买条件，正在准备自动购买...";
 
-        if (activeProfile.Target == IslandTarget.SouthHorn && !IsAtCrystalMoveTarget())
+        if (!IsAtCrystalMoveTarget())
         {
             var crystal = activeProfile.CrystalMoveTarget;
             Send($"/vnav moveto {crystal.X.ToString("0.###", CultureInfo.InvariantCulture)} {crystal.Y.ToString("0.###", CultureInfo.InvariantCulture)} {crystal.Z.ToString("0.###", CultureInfo.InvariantCulture)}");
@@ -1458,7 +1458,7 @@ public sealed partial class Plugin : IDalamudPlugin
             currencyPurchaseMoveDeadline = DateTime.UtcNow + CrystalMoveTimeout;
             nextCurrencyPurchaseMoveCheckAt = DateTime.UtcNow;
             status = "钱币达到购买条件，正在前往大水晶...";
-            log.Information($"南征自动购买：开始前往大水晶，目标坐标 {crystal}");
+            log.Information($"{activeProfile.ChapterName}自动购买：开始前往大水晶，目标坐标 {crystal}");
             return;
         }
 
@@ -1480,13 +1480,13 @@ public sealed partial class Plugin : IDalamudPlugin
             Send("/vnav stop");
             currencyPurchaseMoveActive = false;
             currencyPurchaseMoveDeadline = nextCurrencyPurchaseMoveCheckAt = DateTime.MinValue;
-            log.Information("南征自动购买：已到达大水晶，准备开始购买");
+            log.Information($"{activeProfile.ChapterName}自动购买：已到达大水晶，准备开始购买");
             ScheduleCurrencyPurchaseStart();
             return;
         }
 
         if (DateTime.UtcNow < currencyPurchaseMoveDeadline) return;
-        Stop("未能到达南征大水晶，请检查 vnavmesh 导航状态");
+        Stop($"未能到达{activeProfile.ChapterName}大水晶，请检查 vnavmesh 导航状态");
     }
 
     private void ScheduleCurrencyPurchaseStart()
