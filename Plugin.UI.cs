@@ -192,8 +192,11 @@ public sealed partial class Plugin
         var windowSize = ImGui.GetWindowSize();
         var style = ImGui.GetStyle();
         const float buttonWidth = 24f;
-        const float defaultTitleBarButtonsWidth = 82f;
-        var spacing = style.ItemSpacing.X;
+        var spacing = MathF.Max(2f, style.ItemSpacing.X - 3f);
+        // Match WindowHost's native title-bar layout: two native buttons, each
+        // using the ImGui font size plus ItemInnerSpacing.
+        var nativeButtonsWidth = 2f * (ImGui.GetFontSize() + style.ItemInnerSpacing.X);
+        var defaultTitleBarButtonsWidth = nativeButtonsWidth + spacing;
         var totalWidth = buttonWidth * 3f + spacing * 2f;
         var maximumX = windowPosition.X + windowSize.X - totalWidth - defaultTitleBarButtonsWidth;
         var buttonX = MathF.Max(windowPosition.X + 8f, maximumX);
@@ -327,7 +330,7 @@ public sealed partial class Plugin
         ImGui.Spacing();
         ImGui.TextColored(running ? new Vector4(0.28f, 0.9f, 0.72f, 1f) : new Vector4(0.65f, 0.67f, 0.68f, 1f), running ? "● 运行中" : "○ 已停止");
         ImGui.SameLine();
-        ImGui.Text($"当前选择模式：{activeProfile.ChapterName}");
+        ImGui.Text($"当前选择模式：{(activeProfile.Target == IslandTarget.SouthHorn ? "南征之章" : "北征之章")}");
     }
 
     private static void DrawPureBlurBackground(float strength, bool border)
@@ -498,6 +501,7 @@ public sealed partial class Plugin
 
     private void DrawBProfileConfig()
     {
+        const float profileControlWidth = 250f;
         if (ImGui.BeginTable("BProfileConfig", 2, ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.BordersInnerV))
         {
             ImGui.TableSetupColumn("BProfileLabel", ImGuiTableColumnFlags.WidthFixed, 150f);
@@ -506,7 +510,7 @@ public sealed partial class Plugin
             ImGui.TableNextColumn();
             ImGui.Text("战斗辅助职业");
             ImGui.TableNextColumn();
-            ImGui.SetNextItemWidth(250f);
+            ImGui.SetNextItemWidth(profileControlWidth);
             if (ImGui.BeginCombo("##BCombatJob", combatJob))
             {
                 foreach (var job in CombatJobs)
@@ -531,7 +535,7 @@ public sealed partial class Plugin
             ImGui.TableNextColumn();
             ImGui.Text("DR 自动丢弃预设");
             ImGui.TableNextColumn();
-            ImGui.SetNextItemWidth(170f);
+            ImGui.SetNextItemWidth(profileControlWidth);
             if (ImGui.InputText("##BDiscardPreset", ref discardPreset, 128))
             {
                 config.DiscardPreset = discardPreset;
@@ -547,7 +551,7 @@ public sealed partial class Plugin
             ImGui.Text("寻宝模式选择");
             ImGui.TableNextColumn();
             var treasureModeText = config.TreasureModeSelection == TreasureMode.XszRun ? "XSZ 跑刀" : "DR 跑刀";
-            ImGui.SetNextItemWidth(170f);
+            ImGui.SetNextItemWidth(profileControlWidth);
             if (ImGui.BeginCombo("##BTreasureMode", treasureModeText))
             {
                 if (ImGui.Selectable("DR 跑刀", config.TreasureModeSelection == TreasureMode.DrRun))
@@ -566,6 +570,12 @@ public sealed partial class Plugin
             DrawInfoIcon(
                 "BTreasureModeInfo",
                 "XSZ 跑刀为 XSZToolbox 测试码功能，如果你没有权限则不要选择这个模式。");
+            ImGui.TableNextRow(ImGuiTableRowFlags.None, ImGui.GetFrameHeight() + 6f);
+            ImGui.TableNextColumn();
+            ImGui.Text("寻宝记录");
+            ImGui.TableNextColumn();
+            if (ImGui.Button("查看寻宝战利品记录", new Vector2(profileControlWidth, 0f)))
+                treasureHistoryWindow.IsOpen = true;
             ImGui.EndTable();
         }
     }
@@ -682,10 +692,12 @@ public sealed partial class Plugin
         private readonly Plugin plugin;
         private bool simplifiedMode;
         private int sizeRestoreFrames;
+        private bool titleBarSpacingPushed;
 
         public MainWindow(Plugin plugin) : base($"OCNFarmer v{PluginVersion}##OCNFarmer")
         {
             this.plugin = plugin;
+            Flags |= ImGuiWindowFlags.NoCollapse;
             simplifiedMode = plugin.config.SimplifiedUi;
             var savedSize = GetSavedSize();
             if (savedSize.X > 0 && savedSize.Y > 0)
@@ -711,6 +723,16 @@ public sealed partial class Plugin
             IsOpen = false;
         }
 
+        public override void PreDraw()
+        {
+            base.PreDraw();
+            // Apply the same spacing to Dalamud's native title-bar controls so
+            // the three plugin buttons and the two native controls form one
+            // evenly spaced group.
+            ImGui.PushStyleVar(ImGuiStyleVar.ItemInnerSpacing, new Vector2(7f, ImGui.GetStyle().ItemInnerSpacing.Y));
+            titleBarSpacingPushed = true;
+        }
+
         public override void Draw() => plugin.DrawStatus();
 
         public void ToggleSimplifiedMode()
@@ -734,6 +756,11 @@ public sealed partial class Plugin
         public override void PostDraw()
         {
             base.PostDraw();
+            if (titleBarSpacingPushed)
+            {
+                ImGui.PopStyleVar();
+                titleBarSpacingPushed = false;
+            }
             var size = ImGui.GetWindowSize();
             if (size.X <= 0 || size.Y <= 0) return;
             if (sizeRestoreFrames > 0)
@@ -765,6 +792,124 @@ public sealed partial class Plugin
                 plugin.config.WindowWidth = size.X;
                 plugin.config.WindowHeight = size.Y;
             }
+        }
+    }
+
+    private sealed class TreasureHistoryWindow : Dalamud.Interface.Windowing.Window
+    {
+        private readonly Plugin plugin;
+        private int filter;
+
+        public TreasureHistoryWindow(Plugin plugin) : base("寻宝战利品##OCNFarmerTreasureHistory")
+        {
+            this.plugin = plugin;
+            Flags |= ImGuiWindowFlags.NoCollapse;
+            Size = new Vector2(760f, 560f);
+            SizeCondition = ImGuiCond.FirstUseEver;
+            IsOpen = false;
+        }
+
+        public override void Draw()
+        {
+            DrawPureBlurBackground(0.82f, true);
+            ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(16f, 14f));
+            ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(10f, 8f));
+            ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 6f);
+            ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0.025f, 0.03f, 0.035f, 0.72f));
+            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.22f, 0.27f, 0.31f, 0.98f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.36f, 0.42f, 0.44f, 1f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.08f, 0.58f, 0.56f, 1f));
+            try
+            {
+                ImGui.TextColored(new Vector4(0.95f, 0.88f, 0.02f, 1f), "寻宝战利品");
+                ImGui.SameLine();
+                ImGui.TextDisabled($"共 {plugin.treasureRecords.Count} 次");
+                ImGui.Separator();
+                DrawFilterButton("全部", 0);
+                ImGui.SameLine();
+                DrawFilterButton("今日", 1);
+                ImGui.SameLine();
+                DrawFilterButton("本周", 2);
+                ImGui.SameLine();
+                DrawFilterButton("本月", 3);
+                var now = DateTime.Now;
+                var today = now.Date;
+                var weekStart = today.AddDays(-(int)today.DayOfWeek);
+                var monthStart = new DateTime(today.Year, today.Month, 1);
+                var filtered = plugin.treasureRecords.Where(record => filter switch
+                {
+                    1 => record.CompletedAt >= today,
+                    2 => record.CompletedAt >= weekStart,
+                    3 => record.CompletedAt >= monthStart,
+                    _ => true,
+                }).ToList();
+                ImGui.SameLine();
+                ImGui.TextDisabled($"筛选结果 {filtered.Count} 次");
+                ImGui.TextDisabled($"今日 {plugin.treasureRecords.Count(x => x.CompletedAt >= today)} 次  ·  本周 {plugin.treasureRecords.Count(x => x.CompletedAt >= weekStart)} 次  ·  本月 {plugin.treasureRecords.Count(x => x.CompletedAt >= monthStart)} 次");
+                ImGui.Spacing();
+                ImGui.TextColored(new Vector4(0.95f, 0.88f, 0.02f, 1f), "物品获得统计");
+                var lootTotals = filtered
+                    .SelectMany(record => record.Loot ?? new Dictionary<string, int>())
+                    .GroupBy(item => item.Key, StringComparer.Ordinal)
+                    .Select(group => new { Name = group.Key, Count = group.Sum(item => item.Value) })
+                    .OrderBy(item => item.Count)
+                    .ThenBy(item => item.Name, StringComparer.Ordinal)
+                    .ToList();
+                if (lootTotals.Count == 0)
+                    ImGui.TextDisabled("当前筛选范围内暂无战利品记录");
+                else if (ImGui.BeginTable("TreasureLootTotalsTable", 2, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp))
+                {
+                    ImGui.TableSetupColumn("物品", ImGuiTableColumnFlags.WidthStretch);
+                    ImGui.TableSetupColumn("累计获得", ImGuiTableColumnFlags.WidthFixed, 110f);
+                    ImGui.TableHeadersRow();
+                    foreach (var item in lootTotals)
+                    {
+                        ImGui.TableNextRow();
+                        ImGui.TableNextColumn();
+                        ImGui.Text(item.Name);
+                        ImGui.TableNextColumn();
+                        ImGui.Text($"×{item.Count}");
+                    }
+                    ImGui.EndTable();
+                }
+                ImGui.Spacing();
+                ImGui.TextColored(new Vector4(0.95f, 0.88f, 0.02f, 1f), "寻宝记录明细");
+                if (ImGui.BeginTable("TreasureHistoryTable", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.ScrollY, new Vector2(0f, -1f)))
+                {
+                    ImGui.TableSetupColumn("完成时间", ImGuiTableColumnFlags.WidthFixed, 150f);
+                    ImGui.TableSetupColumn("副本", ImGuiTableColumnFlags.WidthFixed, 110f);
+                    ImGui.TableSetupColumn("战利品", ImGuiTableColumnFlags.WidthStretch);
+                    ImGui.TableHeadersRow();
+                    foreach (var record in filtered)
+                    {
+                        ImGui.TableNextRow();
+                        ImGui.TableNextColumn();
+                        ImGui.Text(record.CompletedAt.ToString("yyyy-MM-dd HH:mm"));
+                        ImGui.TableNextColumn();
+                        ImGui.Text(record.Island == IslandTarget.SouthHorn ? "南征之章" : "北征之章");
+                        ImGui.TableNextColumn();
+                        var loot = record.Loot.Count == 0
+                            ? "未检测到获得物品消息"
+                            : string.Join("、", record.Loot.OrderBy(x => x.Value).ThenBy(x => x.Key, StringComparer.Ordinal).Select(x => $"{x.Key}×{x.Value}"));
+                        ImGui.TextWrapped(loot);
+                    }
+                    ImGui.EndTable();
+                }
+            }
+            finally
+            {
+                ImGui.PopStyleColor(4);
+                ImGui.PopStyleVar(3);
+            }
+        }
+
+        private void DrawFilterButton(string label, int value)
+        {
+            // Keep the ImGui style stack balanced even when the click changes filter.
+            var selectedBeforeClick = filter == value;
+            if (selectedBeforeClick) ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.08f, 0.58f, 0.56f, 1f));
+            if (ImGui.SmallButton(label)) filter = value;
+            if (selectedBeforeClick) ImGui.PopStyleColor();
         }
     }
 }

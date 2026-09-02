@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using System.Globalization;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using Dalamud.Game.Chat;
 using Dalamud.Game.Command;
 using Dalamud.Game.Text;
@@ -24,6 +25,14 @@ public enum TreasureMode
 {
     DrRun = 0,
     XszRun = 1,
+}
+
+public sealed class TreasureRecord
+{
+    public DateTime CompletedAt { get; set; }
+    public IslandTarget Island { get; set; }
+    public TreasureMode Mode { get; set; }
+    public Dictionary<string, int> Loot { get; set; } = new(StringComparer.Ordinal);
 }
 
 public sealed partial class Plugin : IDalamudPlugin
@@ -90,6 +99,9 @@ public sealed partial class Plugin : IDalamudPlugin
     private readonly CurrencyBuyer currencyBuyer;
     private readonly WindowSystem windows = new("OCNFarmer");
     private readonly MainWindow mainWindow;
+    private readonly TreasureHistoryWindow treasureHistoryWindow;
+    private readonly List<TreasureRecord> treasureRecords = new();
+    private readonly string treasureRecordPath;
     private DateTime pendingScanAt = DateTime.MinValue;
     private DateTime pendingBocchiAt = DateTime.MinValue;
     private DateTime pendingReturnScanAt = DateTime.MinValue;
@@ -170,13 +182,17 @@ public sealed partial class Plugin : IDalamudPlugin
             typeof(GamePacketManager)));
         config = pluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
         config.Initialize(pluginInterface);
+        treasureRecordPath = Path.Combine(pluginInterface.GetPluginConfigDirectory(), "treasure-records.json");
+        LoadTreasureRecords();
         combatJob = CombatJobs.Contains(config.CombatJob, StringComparer.Ordinal) ? config.CombatJob : combatJob;
         discardPreset = config.DiscardPreset ?? "";
         NormalizePurchaseConfig();
         ApplySelectedProfile();
         currencyBuyer = new CurrencyBuyer(clientState, objects, condition, gameGui, addonLifecycle, log, OnCurrencyPurchaseFinished);
         mainWindow = new MainWindow(this);
+        treasureHistoryWindow = new TreasureHistoryWindow(this);
         windows.AddWindow(mainWindow);
+        windows.AddWindow(treasureHistoryWindow);
 
         commands.AddHandler("/ocnchest", new CommandInfo((_, _) => mainWindow.IsOpen = true)
         {
@@ -281,9 +297,67 @@ public sealed partial class Plugin : IDalamudPlugin
     {
         Stop("已紧急停止");
         Send("/bocchiillegal off");
-        Send("/xsz-occult-treasure stop");
+        Send(config.TreasureModeSelection == TreasureMode.XszRun
+            ? "/xsz-occult-treasure stop"
+            : "/pdr ptreasure abort");
         Send("/vnav stop");
         bocchiEnabled = false;
+    }
+
+    private void LoadTreasureRecords()
+    {
+        try
+        {
+            if (!File.Exists(treasureRecordPath)) return;
+            var loaded = JsonSerializer.Deserialize<List<TreasureRecord>>(File.ReadAllText(treasureRecordPath));
+            if (loaded == null) return;
+            treasureRecords.Clear();
+            treasureRecords.AddRange(loaded
+                .Where(x => x != null)
+                .Select(x =>
+                {
+                    x.Loot ??= new Dictionary<string, int>(StringComparer.Ordinal);
+                    return x;
+                })
+                .OrderByDescending(x => x.CompletedAt)
+                .Take(1000));
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "读取寻宝战利品记录失败，将使用空记录");
+            treasureRecords.Clear();
+        }
+    }
+
+    private void SaveTreasureRecord()
+    {
+        try
+        {
+            var record = new TreasureRecord
+            {
+                CompletedAt = DateTime.Now,
+                Island = activeProfile.Target,
+                Mode = config.TreasureModeSelection,
+                Loot = new Dictionary<string, int>(treasureLoot, StringComparer.Ordinal),
+            };
+            treasureRecords.Insert(0, record);
+            if (treasureRecords.Count > 1000)
+                treasureRecords.RemoveRange(1000, treasureRecords.Count - 1000);
+
+            var directory = Path.GetDirectoryName(treasureRecordPath);
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+            var tempPath = treasureRecordPath + ".tmp";
+            var json = JsonSerializer.Serialize(treasureRecords, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(tempPath, json, Encoding.UTF8);
+            if (File.Exists(treasureRecordPath))
+                File.Replace(tempPath, treasureRecordPath, null);
+            else
+                File.Move(tempPath, treasureRecordPath);
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "保存寻宝战利品记录失败");
+        }
     }
 
     private void OnUpdate(IFramework framework)
@@ -614,6 +688,7 @@ public sealed partial class Plugin : IDalamudPlugin
         }
         if (ownReturnCompleted && treasurePhase == TreasurePhase.OuterReturn)
         {
+            SaveTreasureRecord();
             if (config.NotifyTreasureComplete)
                 SendServerChanNotificationAsync("OCNFarmer已完成一次寻宝，请查阅战利品清单。", BuildTreasureLootMessage(), "寻宝完成");
             treasurePhase = TreasurePhase.LeaveDuty;
@@ -942,6 +1017,7 @@ public sealed partial class Plugin : IDalamudPlugin
         if (now - xszLastPositionChangeAt < XszNoMovementTimeout) return;
 
         log.Information($"XSZ 跑刀连续 {XszNoMovementTimeout.TotalSeconds:0} 秒未检测到坐标变化，视为寻宝完成");
+        SaveTreasureRecord();
         if (config.NotifyTreasureComplete)
             SendServerChanNotificationAsync("OCNFarmer已完成一次寻宝，请查阅战利品清单。", BuildTreasureLootMessage(), "XSZ 跑刀寻宝完成");
 
