@@ -10,6 +10,6 @@
     "IconUrl": "https://raw.githubusercontent.com/Angelways/OCNFarmer/main/icon.png",
     "DownloadLinkInstall": "https://github.com/Angelways/OCNFarmer/releases/download/v1.9.5.0/latest.zip",
     "DownloadLinkUpdate": "https://github.com/Angelways/OCNFarmer/releases/download/v1.9.5.0/latest.zip",
-    "Changelog": "优化界面布局与寻宝记录统计"
+    "Changelog": "修复简化界面尺寸保存问题，优化界面布局与战利品统计"
   }
 ]
