@@ -767,7 +767,13 @@ public sealed partial class Plugin
             {
                 sizeRestoreFrames--;
                 if (sizeRestoreFrames == 0)
+                {
                     SizeCondition = ImGuiCond.FirstUseEver;
+                    // Size is only needed to apply a saved/default size during
+                    // initialization. Keeping it populated can reapply that
+                    // value when Dalamud recreates the window.
+                    Size = null;
+                }
                 return;
             }
             var savedSize = GetSavedSize();
