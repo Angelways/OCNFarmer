@@ -37,7 +37,88 @@ public sealed class TreasureRecord
 
 public sealed partial class Plugin : IDalamudPlugin
 {
-    private static readonly string PluginVersion = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "1.9.1.0";
+    private static readonly string PluginVersion = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "1.9.6.0";
+    private static readonly IReadOnlyDictionary<string, int> LootStarLevels =
+        new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            // 一星战利品
+            ["无瑕白染剂"] = 1,
+            ["煤玉黑染剂"] = 1,
+            ["柔彩粉染剂"] = 1,
+            ["垂直霓虹墙灯"] = 1,
+            ["魔法飞床"] = 1,
+            ["火巨人角笛"] = 1,
+            ["优雷卡盐蓝燕角笛"] = 1,
+            ["演技教材·好冷"] = 1,
+            ["发型样式：发箍式编发"] = 1,
+            ["劳动十四号认证密钥"] = 1,
+            ["演技教材·巡视"] = 1,
+            ["发型样式：飞翔者"] = 1,
+            ["发型样式：黎明辫"] = 1,
+            ["恐爪龙角笛"] = 1,
+            ["加百列III号机认证密钥"] = 1,
+            ["发型样式：侧马尾辫"] = 1,
+            ["次品十二城邦金币"] = 1,
+            ["发型样式：长发"] = 1,
+            ["发型样式：基拉巴尼亚编发"] = 1,
+            ["演技教材·陆行鸟之笔"] = 1,
+            ["大天使之翼"] = 1,
+            ["发型样式：麻花辫丸子头"] = 1,
+
+            // 二星战利品
+            ["好运胡萝卜"] = 2,
+            ["安静蜂鸟笛"] = 2,
+            ["渡渡鸟角笛"] = 2,
+            ["水平霓虹墙灯"] = 2,
+
+            // 三星战利品
+            ["力之新月魔耳饰"] = 3,
+            ["力之新月魔项链"] = 3,
+            ["力之新月魔手镯"] = 3,
+            ["魔之新月魔耳饰"] = 3,
+            ["魔之新月魔项链"] = 3,
+            ["魔之新月魔手镯"] = 3,
+        };
+
+    private static string NormalizeLootName(string itemName)
+    {
+        if (string.IsNullOrWhiteSpace(itemName)) return string.Empty;
+
+        var normalized = itemName.Trim();
+        while (normalized.Length > 0 &&
+               (char.GetUnicodeCategory(normalized[0]) == UnicodeCategory.PrivateUse ||
+                char.IsControl(normalized[0])))
+        {
+            normalized = normalized[1..].TrimStart();
+        }
+
+        return normalized;
+    }
+
+    internal static int GetLootStarLevel(string itemName)
+    {
+        var normalized = NormalizeLootName(itemName);
+        if (normalized.Length == 0) return 0;
+
+        return LootStarLevels.TryGetValue(normalized, out var level) ? level : 0;
+    }
+
+    internal static string FormatLootName(string itemName)
+    {
+        var normalized = NormalizeLootName(itemName);
+        var level = GetLootStarLevel(normalized);
+        return level == 0 ? normalized : new string('☆', level) + normalized;
+    }
+
+    internal static IOrderedEnumerable<KeyValuePair<string, int>> OrderLoot(
+        IEnumerable<KeyValuePair<string, int>> loot)
+    {
+        return loot
+            .OrderByDescending(item => GetLootStarLevel(item.Key))
+            .ThenBy(item => item.Value)
+            .ThenBy(item => item.Key, StringComparer.Ordinal);
+    }
+
     private static readonly string[] CombatJobs =
     {
         "辅助白魔法师", "辅助武士", "辅助猎人", "辅助武僧", "辅助狂战士",
@@ -319,8 +400,7 @@ public sealed partial class Plugin : IDalamudPlugin
                     x.Loot ??= new Dictionary<string, int>(StringComparer.Ordinal);
                     return x;
                 })
-                .OrderByDescending(x => x.CompletedAt)
-                .Take(1000));
+                .OrderByDescending(x => x.CompletedAt));
         }
         catch (Exception ex)
         {
@@ -341,8 +421,6 @@ public sealed partial class Plugin : IDalamudPlugin
                 Loot = new Dictionary<string, int>(treasureLoot, StringComparer.Ordinal),
             };
             treasureRecords.Insert(0, record);
-            if (treasureRecords.Count > 1000)
-                treasureRecords.RemoveRange(1000, treasureRecords.Count - 1000);
 
             var directory = Path.GetDirectoryName(treasureRecordPath);
             if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
@@ -771,8 +849,8 @@ public sealed partial class Plugin : IDalamudPlugin
     {
         var builder = new StringBuilder(DateTime.Now.ToString("yyyy年M月d日HH:mm", CultureInfo.InvariantCulture));
         builder.Append(" 完成了一次寻宝  \n本次寻宝的战利品清单：");
-        foreach (var item in treasureLoot.OrderBy(x => x.Value).ThenBy(x => x.Key, StringComparer.Ordinal))
-            builder.Append("  \n").Append(item.Key).Append('×').Append(item.Value);
+        foreach (var item in OrderLoot(treasureLoot))
+            builder.Append("  \n").Append(FormatLootName(item.Key)).Append('×').Append(item.Value);
         if (treasureLoot.Count == 0)
             builder.Append("  \n未检测到获得物品消息");
         return builder.ToString().TrimEnd();

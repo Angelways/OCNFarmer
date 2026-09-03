@@ -9,6 +9,7 @@ public sealed partial class Plugin
 {
     private static readonly Vector2 DefaultFullWindowSize = new(980f, 760f);
     private static readonly Vector2 DefaultSimplifiedWindowSize = new(520f, 140f);
+    private bool showServerChanApiUrl;
     private enum TitleBarIcon { Play, Stop, FullView, CompactView }
 
     private void OpenServerChanDocs()
@@ -52,7 +53,7 @@ public sealed partial class Plugin
         }
         if (!expanded) return;
 
-        ImGui.TextWrapped("通过Server酱，插件可实现在指定条件达成时为你的手机或者其他设备发送一个包含战利品清单的通知。具体参阅");
+        ImGui.TextWrapped("通过Server酱，插件可在指定条件达成时为你的手机或者其他设备发送一个包含战利品清单的通知。具体参阅");
         if (ImGui.SmallButton("Server酱用户文档")) OpenServerChanDocs();
 
         var enabled = config.ServerChanEnabled;
@@ -65,12 +66,22 @@ public sealed partial class Plugin
 
         ImGui.TextWrapped("在此处填写Server酱SendKey页面获取到的API URL");
         var apiUrl = config.ServerChanApiUrl;
-        ImGui.SetNextItemWidth(-1);
-        if (ImGui.InputText("API URL", ref apiUrl, 512))
+        var eyeButtonSize = new Vector2(ImGui.GetFrameHeight(), ImGui.GetFrameHeight());
+        var apiInputWidth = MathF.Min(
+            480f,
+            MathF.Max(120f, ImGui.GetContentRegionAvail().X - eyeButtonSize.X - ImGui.GetStyle().ItemSpacing.X));
+        ImGui.SetNextItemWidth(apiInputWidth);
+        var inputFlags = showServerChanApiUrl ? ImGuiInputTextFlags.None : ImGuiInputTextFlags.Password;
+        if (ImGui.InputText("##ServerChanApiUrl", ref apiUrl, 512, inputFlags))
         {
             config.ServerChanApiUrl = apiUrl;
             config.Save();
         }
+        ImGui.SameLine();
+        if (ImGui.Button($"##ServerChanApiVisibility", eyeButtonSize))
+            showServerChanApiUrl = !showServerChanApiUrl;
+        DrawEyeIcon(ImGui.GetWindowDrawList(), ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), ImGui.GetColorU32(ImGuiCol.Text));
+        DrawTitleBarTooltip(showServerChanApiUrl ? "隐藏 API URL" : "显示 API URL");
 
         var notifyProblem = config.NotifyProblem;
         if (ImGui.Checkbox("插件出现问题时通知", ref notifyProblem))
@@ -265,6 +276,20 @@ public sealed partial class Plugin
         drawList.AddLine(new Vector2(max.X, min.Y), max, color, thickness);
         drawList.AddLine(max, new Vector2(min.X, max.Y), color, thickness);
         drawList.AddLine(new Vector2(min.X, max.Y), min, color, thickness);
+    }
+
+    private static void DrawEyeIcon(ImDrawListPtr drawList, Vector2 min, Vector2 max, uint color)
+    {
+        var center = (min + max) * 0.5f;
+        var halfWidth = MathF.Min(7f, (max.X - min.X) * 0.3f);
+        var halfHeight = MathF.Min(4.5f, (max.Y - min.Y) * 0.28f);
+        var left = center + new Vector2(-halfWidth, 0f);
+        var right = center + new Vector2(halfWidth, 0f);
+        drawList.AddLine(left, center + new Vector2(-halfWidth * 0.35f, -halfHeight), color, 1.3f);
+        drawList.AddLine(center + new Vector2(-halfWidth * 0.35f, -halfHeight), right, color, 1.3f);
+        drawList.AddLine(right, center + new Vector2(halfWidth * 0.35f, halfHeight), color, 1.3f);
+        drawList.AddLine(center + new Vector2(halfWidth * 0.35f, halfHeight), left, color, 1.3f);
+        drawList.AddCircleFilled(center, 2f, color);
     }
 
     private static void DrawTitleBarTooltip(string text)
@@ -693,33 +718,17 @@ public sealed partial class Plugin
         private bool simplifiedMode;
         private int sizeRestoreFrames;
         private bool titleBarSpacingPushed;
+        private bool applyingSize;
 
         public MainWindow(Plugin plugin) : base($"OCNFarmer v{PluginVersion}##OCNFarmer")
         {
             this.plugin = plugin;
             Flags |= ImGuiWindowFlags.NoCollapse;
             simplifiedMode = plugin.config.SimplifiedUi;
-            var savedSize = GetSavedSize();
-            if (savedSize.X > 0 && savedSize.Y > 0)
-            {
-                if (!simplifiedMode && (savedSize.X < 820f || savedSize.Y < 620f))
-                    savedSize = DefaultFullWindowSize;
-                Size = savedSize;
-                SizeCondition = ImGuiCond.Always;
-                sizeRestoreFrames = 1;
-            }
-            else if (!simplifiedMode)
-            {
-                Size = DefaultFullWindowSize;
-                SizeCondition = ImGuiCond.Always;
-                sizeRestoreFrames = 1;
-            }
-            else if (simplifiedMode)
-            {
-                Size = DefaultSimplifiedWindowSize;
-                SizeCondition = ImGuiCond.Always;
-                sizeRestoreFrames = 1;
-            }
+            Size = GetSavedSizeOrDefault();
+            SizeCondition = ImGuiCond.Always;
+            sizeRestoreFrames = 2;
+            applyingSize = true;
             IsOpen = false;
         }
 
@@ -737,19 +746,18 @@ public sealed partial class Plugin
 
         public void ToggleSimplifiedMode()
         {
+            if (applyingSize) return;
             var currentSize = ImGui.GetWindowSize();
             if (currentSize.X > 0 && currentSize.Y > 0)
                 StoreSize(currentSize);
 
             simplifiedMode = !simplifiedMode;
             plugin.config.SimplifiedUi = simplifiedMode;
-            var targetSize = GetSavedSize();
-            if (targetSize.X <= 0 || targetSize.Y <= 0)
-                targetSize = simplifiedMode ? DefaultSimplifiedWindowSize : currentSize;
-            Size = targetSize;
+            Size = GetSavedSizeOrDefault();
             SizeCondition = ImGuiCond.Always;
-            // 当前帧已经 Begin；保留两帧，确保下一帧真正应用目标尺寸后再恢复正常尺寸条件。
-            sizeRestoreFrames = 2;
+            // 阻止连续点击在尺寸尚未应用时再次切换，避免沿用旧模式尺寸。
+            sizeRestoreFrames = 3;
+            applyingSize = true;
             plugin.config.Save();
         }
 
@@ -773,6 +781,7 @@ public sealed partial class Plugin
                     // initialization. Keeping it populated can reapply that
                     // value when Dalamud recreates the window.
                     Size = null;
+                    applyingSize = false;
                 }
                 return;
             }
@@ -780,6 +789,17 @@ public sealed partial class Plugin
             if (MathF.Abs(savedSize.X - size.X) < 0.5f && MathF.Abs(savedSize.Y - size.Y) < 0.5f) return;
             StoreSize(size);
             plugin.config.Save();
+        }
+
+        private Vector2 GetSavedSizeOrDefault()
+        {
+            var saved = GetSavedSize();
+            var fallback = simplifiedMode ? DefaultSimplifiedWindowSize : DefaultFullWindowSize;
+            if (saved.X <= 0f || saved.Y <= 0f || !float.IsFinite(saved.X) || !float.IsFinite(saved.Y))
+                return fallback;
+            if (!simplifiedMode && (saved.X < 820f || saved.Y < 620f))
+                return fallback;
+            return new Vector2(Math.Clamp(saved.X, 320f, 4000f), Math.Clamp(saved.Y, 100f, 3000f));
         }
 
         private Vector2 GetSavedSize() => simplifiedMode
@@ -805,6 +825,9 @@ public sealed partial class Plugin
     {
         private readonly Plugin plugin;
         private int filter;
+        private int detailSort;
+        private bool showRareTotals;
+        private bool showRareDetails;
 
         public TreasureHistoryWindow(Plugin plugin) : base("寻宝战利品##OCNFarmerTreasureHistory")
         {
@@ -854,16 +877,24 @@ public sealed partial class Plugin
                 ImGui.TextDisabled($"今日 {plugin.treasureRecords.Count(x => x.CompletedAt >= today)} 次  ·  本周 {plugin.treasureRecords.Count(x => x.CompletedAt >= weekStart)} 次  ·  本月 {plugin.treasureRecords.Count(x => x.CompletedAt >= monthStart)} 次");
                 ImGui.Spacing();
                 ImGui.TextColored(new Vector4(0.95f, 0.88f, 0.02f, 1f), "物品获得统计");
+                ImGui.SameLine();
+                ImGui.Checkbox("仅展示稀有物品##TreasureTotalsRare", ref showRareTotals);
                 var lootTotals = filtered
                     .SelectMany(record => record.Loot ?? new Dictionary<string, int>())
                     .GroupBy(item => item.Key, StringComparer.Ordinal)
                     .Select(group => new { Name = group.Key, Count = group.Sum(item => item.Value) })
-                    .OrderBy(item => item.Count)
+                    .OrderByDescending(item => Plugin.GetLootStarLevel(item.Name))
+                    .ThenBy(item => item.Count)
                     .ThenBy(item => item.Name, StringComparer.Ordinal)
+                    .Where(item => !showRareTotals || Plugin.GetLootStarLevel(item.Name) > 0)
                     .ToList();
                 if (lootTotals.Count == 0)
                     ImGui.TextDisabled("当前筛选范围内暂无战利品记录");
-                else if (ImGui.BeginTable("TreasureLootTotalsTable", 2, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp))
+                else if (ImGui.BeginTable(
+                    "TreasureLootTotalsTable",
+                    2,
+                    ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.ScrollY,
+                    new Vector2(0f, MathF.Min(320f, MathF.Max(160f, ImGui.GetContentRegionAvail().Y * 0.58f)))))
                 {
                     ImGui.TableSetupColumn("物品", ImGuiTableColumnFlags.WidthStretch);
                     ImGui.TableSetupColumn("累计获得", ImGuiTableColumnFlags.WidthFixed, 110f);
@@ -872,7 +903,7 @@ public sealed partial class Plugin
                     {
                         ImGui.TableNextRow();
                         ImGui.TableNextColumn();
-                        ImGui.Text(item.Name);
+                        ImGui.Text(Plugin.FormatLootName(item.Name));
                         ImGui.TableNextColumn();
                         ImGui.Text($"×{item.Count}");
                     }
@@ -880,23 +911,44 @@ public sealed partial class Plugin
                 }
                 ImGui.Spacing();
                 ImGui.TextColored(new Vector4(0.95f, 0.88f, 0.02f, 1f), "寻宝记录明细");
-                if (ImGui.BeginTable("TreasureHistoryTable", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.ScrollY, new Vector2(0f, -1f)))
+                ImGui.SameLine();
+                ImGui.Checkbox("仅展示稀有物品##TreasureDetailsRare", ref showRareDetails);
+                ImGui.SameLine();
+                ImGui.SetNextItemWidth(120f);
+                var sortLabel = detailSort == 0 ? "最新在前" : "最早在前";
+                if (ImGui.BeginCombo("时间排序##TreasureHistorySort", sortLabel))
+                {
+                    if (ImGui.Selectable("最新在前", detailSort == 0)) detailSort = 0;
+                    if (ImGui.Selectable("最早在前", detailSort == 1)) detailSort = 1;
+                    ImGui.EndCombo();
+                }
+                var orderedDetails = detailSort == 0
+                    ? filtered.OrderByDescending(record => record.CompletedAt)
+                    : filtered.OrderBy(record => record.CompletedAt);
+                var detailsHeight = MathF.Max(180f, ImGui.GetContentRegionAvail().Y);
+                if (ImGui.BeginTable("TreasureHistoryTable", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.ScrollY, new Vector2(0f, detailsHeight)))
                 {
                     ImGui.TableSetupColumn("完成时间", ImGuiTableColumnFlags.WidthFixed, 150f);
                     ImGui.TableSetupColumn("副本", ImGuiTableColumnFlags.WidthFixed, 110f);
                     ImGui.TableSetupColumn("战利品", ImGuiTableColumnFlags.WidthStretch);
                     ImGui.TableHeadersRow();
-                    foreach (var record in filtered)
+                    foreach (var record in orderedDetails)
                     {
+                        var recordLoot = Plugin.OrderLoot(record.Loot ?? new Dictionary<string, int>())
+                            .Where(item => !showRareDetails || Plugin.GetLootStarLevel(item.Key) > 0)
+                            .ToList();
+                        if (showRareDetails && recordLoot.Count == 0)
+                            continue;
+
                         ImGui.TableNextRow();
                         ImGui.TableNextColumn();
                         ImGui.Text(record.CompletedAt.ToString("yyyy-MM-dd HH:mm"));
                         ImGui.TableNextColumn();
                         ImGui.Text(record.Island == IslandTarget.SouthHorn ? "南征之章" : "北征之章");
                         ImGui.TableNextColumn();
-                        var loot = record.Loot.Count == 0
+                        var loot = recordLoot.Count == 0
                             ? "未检测到获得物品消息"
-                            : string.Join("、", record.Loot.OrderBy(x => x.Value).ThenBy(x => x.Key, StringComparer.Ordinal).Select(x => $"{x.Key}×{x.Value}"));
+                            : string.Join("、", recordLoot.Select(x => $"{Plugin.FormatLootName(x.Key)}×{x.Value}"));
                         ImGui.TextWrapped(loot);
                     }
                     ImGui.EndTable();
