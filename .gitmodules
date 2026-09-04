@@ -1,0 +1,4 @@
+[submodule "dependencies/OmenTools"]
+	path = dependencies/OmenTools
+	url = https://github.com/AtmoOmen/OmenTools.git
+	branch = main

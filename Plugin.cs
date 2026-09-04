@@ -18,6 +18,7 @@ using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using OmenTools;
 using OmenTools.OmenService;
+using OmenTools.OmenService.Abstractions;
 
 namespace NorthIslandChestPlugin;
 
@@ -249,6 +250,25 @@ public sealed partial class Plugin : IDalamudPlugin
 
     public string Name => "OCNFarmer";
 
+    private static DServiceInitOptions CreateOmenServiceInitOptions()
+    {
+        var options = new DServiceInitOptions();
+        var disableMethod = typeof(DServiceInitOptions).GetMethods()
+            .Single(method => method.Name == "Disable" && method.IsGenericMethodDefinition);
+
+        // OmenTools exposes Disable<T>() in current releases. Disable every
+        // discovered service except the packet manager required by currency flow.
+        foreach (var serviceType in typeof(GamePacketManager).Assembly.GetTypes()
+                     .Where(type => typeof(OmenServiceBase).IsAssignableFrom(type) &&
+                                    !type.IsAbstract &&
+                                    type != typeof(GamePacketManager)))
+        {
+            disableMethod.MakeGenericMethod(serviceType).Invoke(options, null);
+        }
+
+        return options;
+    }
+
     public Plugin(IChatGui chat, IClientState clientState, IObjectTable objects, IFramework framework, ICommandManager commands, ICondition condition, IGameGui gameGui, IPluginLog log, IAddonLifecycle addonLifecycle, IDalamudPluginInterface pluginInterface)
     {
         this.chat = chat;
@@ -259,8 +279,7 @@ public sealed partial class Plugin : IDalamudPlugin
         this.condition = condition;
         this.gameGui = gameGui;
         this.log = log;
-        DService.Init(pluginInterface, () => new DServiceInitOptions().EnableOnly(
-            typeof(GamePacketManager)));
+        DService.Init(pluginInterface, CreateOmenServiceInitOptions);
         config = pluginInterface.GetPluginConfig() as PluginConfig ?? new PluginConfig();
         config.Initialize(pluginInterface);
         treasureRecordPath = Path.Combine(pluginInterface.GetPluginConfigDirectory(), "treasure-records.json");
