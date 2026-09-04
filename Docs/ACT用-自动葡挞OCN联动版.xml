@@ -1,0 +1,307 @@
+<?xml version="1.0"?>
+<TriggernometryExport PluginVersion="2.1.2.2">
+  <ExportedFolder Id="1a123185-16fc-4e9d-90d4-cd3fe3bbabd4" Enabled="true" Name="塔塔露都会用的自动葡挞" ZoneFilterRegularExpression="^蜃景幻界新月岛\ 北征之章$" FfxivZoneFilterRegularExpression="^1346$">
+    <Folders>
+      <Folder Id="23087326-78ac-444c-8249-f34080519d2d" Enabled="true" Name="【勿动】除非你知道自己在干什么">
+        <Folders>
+          <Folder Id="309da4a2-d40d-49c2-8713-f497771ff6b2" Enabled="true" Name="开箱">
+            <Folders>
+              <Folder Id="2a0e26f7-ab67-4003-9789-07ce8b63043a" Enabled="false" Name="老四前两个宝箱 XSZTP回去拿（封号小助手）">
+                <Triggers>
+                  <Trigger Enabled="true" Id="9c125d75-8539-4ef1-8e91-02c71f131133" Name="2开箱-右">
+                    <Actions>
+                      <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="5000" NamedCallbackName="command" NamedCallbackParam="/xsz-divetp 71.98 -707.97 -430.01" />
+                      <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="3000" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                    </Actions>
+                  </Trigger>
+                  <Trigger Enabled="true" Id="ac0349ab-dd56-4770-992f-9f6cd28ebc24" Name="1开箱-左" RegularExpression="获得了“调查记录：目录”。">
+                    <Actions>
+                      <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="20000" NamedCallbackName="command" NamedCallbackParam="/xsz-divetp -36.03 -715.97 -394" />
+                      <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="3000" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                      <Action OrderNumber="3" ActionType="Trigger" ExecutionDelayExpression="5000" TriggerId="9c125d75-8539-4ef1-8e91-02c71f131133" TriggerForce="regexp,conditions" />
+                    </Actions>
+                  </Trigger>
+                  <Trigger Enabled="true" Id="9949ac4d-d8d2-4c70-a169-ffb06a2410cf" Name="仅说明：需开始xszbox的传送相关功能" />
+                </Triggers>
+              </Folder>
+            </Folders>
+            <Triggers>
+              <Trigger Enabled="true" Id="aa60b765-9c93-4fa1-a120-d833a36b0432" Name="开老1箱 （有能力的自己改下坐标，不与其他人重合）" RegularExpression="^.{14} ChatLog 00:0839::.*蛇之间的封锁解除了.*$">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="3000" NamedCallbackName="command" NamedCallbackParam="/vnav moveto -900.2901 -980 691.79535" />
+                  <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="6da10a9a-553a-49f3-a7ef-34dfcb274650" Name="开老2箱 （有能力的自己改下坐标，不与其他人重合）" RegularExpression="^.{14} ChatLog 00:0839::.*舞之间的封锁解除了.*$">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="3000" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 599.29987 -674 685.7743" />
+                  <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="8855ecec-6833-458c-8a28-ee3fe32cc7e0" Name="开老3箱 （有能力的自己改下坐标，不与其他人重合）（有练级需求点进去自己改）" RegularExpression="^.{14} ChatLog 00:0839::.*死之间的封锁解除了.*$">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="3000" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 100.32222 -724 780.632" />
+                  <Action OrderNumber="2" Enabled="False" ActionType="Placeholder" />
+                  <Action OrderNumber="3" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                  <Action OrderNumber="4" Enabled="False" ActionType="NamedCallback" ExecutionDelayExpression="5000" NamedCallbackName="command" NamedCallbackParam="/pdr pjob 需要练级职业名" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="0e8c8ee2-8a64-498a-afc5-ff9000c28871" Name="开老4箱 （前两个坐标不要动，第三个坐标可微调）" RegularExpression="^.{14} ChatLog 00:0839::.*全知之间的封锁解除了.*$">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="4000" NamedCallbackName="command" NamedCallbackParam="/vnav moveto -0.00025798928 -683.9999 -634.0409" />
+                  <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="10000&#xD;&#xA;" NamedCallbackName="command" NamedCallbackParam="/vnav moveto -0.0674071 -683.9999 -640.4188" />
+                  <Action OrderNumber="3" ActionType="NamedCallback" ExecutionDelayExpression="3000" NamedCallbackName="command" NamedCallbackParam="/targetnpc" />
+                  <Action OrderNumber="4" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/lockon" />
+                  <Action OrderNumber="5" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/automove" />
+                  <Action OrderNumber="6" ActionType="NamedCallback" ExecutionDelayExpression="3000" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                  <Action OrderNumber="7" ActionType="NamedCallback" ExecutionDelayExpression="10000" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 0.58433783 -684.3 -719.08075" />
+                  <Action OrderNumber="8" ActionType="NamedCallback" ExecutionDelayExpression="2000" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                  <Action OrderNumber="9" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/rotation Manual" />
+                </Actions>
+              </Trigger>
+            </Triggers>
+          </Folder>
+        </Folders>
+        <Triggers>
+          <Trigger Enabled="true" Id="0bd1da86-e512-440f-b596-f87d6da93727" Name="【选用】进塔自动切换职业：骑士+辅助武士" RegularExpression="已参加紧急遭遇战： 两岐塔 魔之塔">
+            <Actions>
+              <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="12000" NamedCallbackName="command" NamedCallbackParam="/pdr pjob 辅助武士" />
+              <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/pdr job 骑士" />
+              <Action OrderNumber="3" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/e 【骑士+辅助武士】切换完成" />
+            </Actions>
+          </Trigger>
+          <Trigger Enabled="true" Id="8558fb74-1719-49db-9b5f-b98078013032" Name="确认传送进封锁" RegularExpression="已被封锁！">
+            <Actions>
+              <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/pdr callback SelectYesno 0" />
+            </Actions>
+          </Trigger>
+          <Trigger Enabled="true" Id="ae74ee7a-f3fd-4cb9-af5f-7abe664dcfdd" Name="区域内两歧塔已出现" RegularExpression="区域内两歧塔已出现">
+            <Actions>
+              <Action OrderNumber="1" ActionType="UseTTS" UseTTSTextExpression="区域内两歧塔已出现" />
+            </Actions>
+          </Trigger>
+          <Trigger Enabled="true" Id="f870e2f0-3181-42cf-b579-6d4593876a1a" Name="RSR+BMR" RegularExpression="已参加紧急遭遇战： 两岐塔 魔之塔">
+            <Actions>
+              <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="10000" NamedCallbackName="command" NamedCallbackParam="/bmrai on" />
+              <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/rotation Auto" />
+              <Action OrderNumber="3" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/rotation Auto Small" />
+              <Action OrderNumber="4" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/e 【RSR】【BMR】切换成功" />
+            </Actions>
+          </Trigger>
+        </Triggers>
+      </Folder>
+      <Folder Id="b2d73260-ea13-4422-919d-b62d28ffdb17" Enabled="false" Name="OCN联动【与全自动化挂机冲突】">
+        <Triggers>
+          <Trigger Enabled="true" Id="389473d9-c4df-4807-888a-6cd251462c85" Name="OCN联动退塔进岛" RegularExpression="^.{14} ChatLog 00:0839::.*全知之间的封锁解除了.*$">
+            <Actions>
+              <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="50000" NamedCallbackName="command" NamedCallbackParam="/pdr leaveduty" />
+              <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="10000" NamedCallbackName="command" NamedCallbackParam="/bmrai on" />
+              <Action OrderNumber="3" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/rotation Manual" />
+              <Action OrderNumber="4" ActionType="NamedCallback" ExecutionDelayExpression="60000" NamedCallbackName="command" NamedCallbackParam="/ocnstart" />
+            </Actions>
+          </Trigger>
+          <Trigger Enabled="true" Id="a82c081f-26e6-4b31-8ea4-3515cae6fcb4" Name="【选启】进岛自动切换职业：机工+白魔" RegularExpression="^.{14} ChatLog 00:0839::.*700级.*$">
+            <Actions>
+              <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="12000" NamedCallbackName="command" NamedCallbackParam="/pdr pjob 白魔法师" />
+              <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/pdr job 机工" />
+              <Action OrderNumber="3" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/e 【机工+辅助白魔】切换完成" />
+            </Actions>
+          </Trigger>
+          <Trigger Enabled="true" Id="81194f14-e373-403b-95b0-515c54d85157" Name="【说明】ONC功能看描述" Description="管控波奇、金银币自动购买、管控DR跑刀、自动进塔（待完成）&#xD;&#xA;&#xD;&#xA;裤链&#xD;&#xA;https://raw.githubusercontent.com/Angelways/OCNFarmer/main/pluginmaster.json" />
+        </Triggers>
+      </Folder>
+      <Folder Id="491858e1-70ad-411b-9d7e-903d4441ec80" Enabled="false" Name="全自动化挂机【与OCN联动冲突】">
+        <Triggers>
+          <Trigger Enabled="false" Id="8da6fdd2-5079-4457-b741-caf3a33fcee3" Name="【选启】自动前往凉亭（进岛后右键执行一次启动）" RegularExpression="^.{14} ChatLog 00:0839::.*700级.*$">
+            <Actions>
+              <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/e 【出发去凉亭】" />
+              <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="10000" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 882.200 258.500 882.000" />
+              <Action OrderNumber="3" ActionType="NamedCallback" ExecutionDelayExpression="10000" NamedCallbackName="command" NamedCallbackParam="/pdr ptp 卡纳克城塞" />
+              <Action OrderNumber="4" ActionType="NamedCallback" ExecutionDelayExpression="10000" NamedCallbackName="command" NamedCallbackParam="/vnav moveto -318.99554 11.499996 416.86118" />
+              <Action OrderNumber="5" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/ac 随机坐骑" />
+            </Actions>
+          </Trigger>
+          <Trigger Enabled="true" Id="dbbb67fe-f5d7-443d-9784-7d6e555cf5e1" Name="【选启】自动退岛并重新进岛（按需勾选）" RegularExpression="^.{14} ChatLog 00:0839::.*全知之间的封锁解除了.*$">
+            <Actions>
+              <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="50000" NamedCallbackName="command" NamedCallbackParam="/pdr leaveduty" />
+              <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="60000" NamedCallbackName="command" NamedCallbackParam="/pdrfe ocn" />
+            </Actions>
+          </Trigger>
+        </Triggers>
+      </Folder>
+      <Folder Id="76776eeb-49ca-494d-8f8d-8b91a0461315" Enabled="false" Name="0葡挞手动档位0">
+        <Folders>
+          <Folder Id="28b387fc-ca1d-48a7-bf6e-eb69af47bbc2" Enabled="true" Name="BOSS 1 开箱后">
+            <Triggers>
+              <Trigger Enabled="true" Id="158d0537-273a-45a2-992f-1a12466d4f2d" Name="4寻路-2无视电网风险寻路到门口">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 530.3916 -679.93427 828.791" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="3efcc0d3-923a-4975-9b81-be72cd545c12" Name="1交互">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="df05caab-c419-4805-be41-f278270765ab" Name="3交互">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="59ad7b0e-85dd-45ec-9548-6c9d556dc6d4" Name="2寻路">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 540.87585 -699.8005 926.0038" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="8045e99c-254d-4892-a39d-cd384f72ed11" Name="4寻路-1到电网前">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 473.40396 -680.0001 749.8218" />
+                  <Action OrderNumber="2" ActionType="UseTTS" UseTTSTextExpression="寻路到位为电网前，建议准备手动接管" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="bfdb4319-07e4-494c-9368-f1d70107e311" Name="6重启RSR">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/rotation Auto" />
+                  <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/rotation Auto Small" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="eee3656f-94ef-497c-8c10-e81013d86ca2" Name="0先关闭RSR" RegularExpression="已参加紧急遭遇战： 两岐塔 魔之塔">
+                <Actions>
+                  <Action OrderNumber="1" Enabled="False" ActionType="NamedCallback" ExecutionDelayExpression="10000" NamedCallbackName="command" NamedCallbackParam="/bmrai on" />
+                  <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/rotation off" />
+                  <Action OrderNumber="3" Enabled="False" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/rotation Auto Small" />
+                  <Action OrderNumber="4" Enabled="False" ActionType="NamedCallback" ExecutionDelayExpression="1000" NamedCallbackName="command" NamedCallbackParam="/e 【RSR】【BMR】切换成功" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="41d8ed85-1377-4391-9fc7-11cb749e3d56" Name="5寻路到boss房【待完成】">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 601.2939 -674.00006 726.5772" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="6f0945d9-088e-43ca-818e-750c07d245f1" Name="4寻路-0到机关前（无视几个电网）">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 393.48495 -699.88776 833.1027" />
+                  <Action OrderNumber="2" ActionType="UseTTS" UseTTSTextExpression="寻路到位为电网前，建议准备手动接管" />
+                </Actions>
+              </Trigger>
+            </Triggers>
+          </Folder>
+          <Folder Id="2cc79936-81ca-4a01-bed6-c27443067e62" Enabled="true" Name="BOSS 2 开箱后">
+            <Triggers>
+              <Trigger Enabled="true" Id="d479b426-3615-4dc1-a2fb-d5e384fb9499" Name="3寻路 等开门">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 599.8393 -699.95 109.5799" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="c9cf2850-dbf7-44f1-b238-259f24b7c691" Name="2交互">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="d60c6ef8-8cc0-4d7b-afba-d41d137d7f79" Name="7交互">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="c68b55b6-ce17-4a0f-a2e7-3f2e9d7209de" Name="1寻路">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 599.93 -673.8 625.62274" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="27d09a2a-f7cb-42cb-9090-879f69835336" Name="4寻路">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 599.7661 -690 48.064583" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="a5aa0eb7-f817-492e-8fef-9cc0e09c3fa1" Name="8寻路到boss房">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 99.25967 -724 822.3374" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="8c609db8-335a-4de2-99b5-8abbc0ed2475" Name="5交互">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="c877e8b2-0cbf-4615-a3b0-dc06a9590fc7" Name="6寻路">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 599.9261 -671.8 -139.38246" />
+                </Actions>
+              </Trigger>
+            </Triggers>
+          </Folder>
+          <Folder Id="ef515175-265b-46a4-a063-43972eafed69" Enabled="true" Name="BOSS 3 开箱后">
+            <Triggers>
+              <Trigger Enabled="true" Id="8f0f30f2-60bf-466b-883f-6259e13747aa" Name="4寻路到小怪宝箱">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 99.933266 -700 394.9113" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="7a5e0840-890a-403b-8e8b-8968f890e721" Name="5寻路 大概不管用">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 100.2531 -679.30005 321.2575" />
+                  <Action OrderNumber="2" ActionType="UseTTS" UseTTSTextExpression="原地不动就手动接管后面吧" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="8b6beb58-77b4-445d-b0ee-0cd1e512a93f" Name="2寻路">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 99.88423 -691.5 491.73987" />
+                  <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="2000" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="8b9f80fa-dc18-415b-8c8e-2c45214e578f" Name="8-0寻路去右边宝箱">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto -36.03 -715.97 -394" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="1e8d1df3-6a41-4d8b-8b44-c341f35c9ce7" Name="7-1交互宝箱">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="92d6a015-ebd4-448b-b239-7029a75181bc" Name="8-1交互宝箱">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="a912459b-cc01-434e-8c9c-e5e3534a2332" Name="6交互">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/snd run 交互传送装置" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="0c91115d-e29f-4a05-ab71-e7cc58e841d7" Name="1寻路" RegularExpression="获得了“调查记录：惧死者”。">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto 100.18477 -707.02277 671.1434" />
+                </Actions>
+              </Trigger>
+              <Trigger Enabled="true" Id="d0021fb5-e54d-43d3-90c2-e0711951d258" Name="7-0寻路去左边宝箱">
+                <Actions>
+                  <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/vnav moveto -36.03 -715.97 -394" />
+                </Actions>
+              </Trigger>
+            </Triggers>
+          </Folder>
+        </Folders>
+      </Folder>
+    </Folders>
+    <Triggers>
+      <Trigger Enabled="false" Id="2ca0a143-a719-497f-92f7-401b61f4e35d" Name="【必须】右键执行一次启动相关模块">
+        <Actions>
+          <Action OrderNumber="1" ActionType="NamedCallback" NamedCallbackName="command" NamedCallbackParam="/pdr load CallbackCommand" />
+          <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="300" NamedCallbackName="command" NamedCallbackParam="/pdr load OccultCrescentHelper" />
+          <Action OrderNumber="3" ActionType="NamedCallback" ExecutionDelayExpression="300" NamedCallbackName="command" NamedCallbackParam="/pdr load FieldEntryCommand" />
+          <Action OrderNumber="4" ActionType="NamedCallback" ExecutionDelayExpression="300" NamedCallbackName="command" NamedCallbackParam="/pdr load InstantLeaveDuty" />
+          <Action OrderNumber="5" ActionType="NamedCallback" ExecutionDelayExpression="300" NamedCallbackName="command" NamedCallbackParam="/pdr load JobSwitchCommand" />
+          <Action OrderNumber="6" ActionType="NamedCallback" ExecutionDelayExpression="300" NamedCallbackName="command" NamedCallbackParam="/pdr load PhantomJobSwitchCommand" />
+        </Actions>
+      </Trigger>
+      <Trigger Enabled="false" Id="7d0404cb-5671-4305-bf56-2c4b9a0b45a0" Name="【必看】食用说明：双击进去看描述" Description="写在前面，开挂有风险，封号需谨慎。&#xD;&#xA;&#xD;&#xA;只打boss，等路人开怪传送，人少建议不要去，不然被发现抓到挂你！！！&#xD;&#xA;-----------------------------------------------------------------------------------------------------&#xD;&#xA;【须知】&#xD;&#xA;&#xD;&#xA;1、bmr和rsr会在进塔后自动切换到需要的模式&#xD;&#xA;&#xD;&#xA;2、职业推荐 （自动切换也是这么切的，你可以去勿动里面修改）仅推荐主职骑士+副职武士&#xD;&#xA;            &#xD;&#xA;3、一旦时间到了被踢出岛不会从新进岛（一般是半夜你挂机导致的）&#xD;&#xA;&#xD;&#xA;4、纯挂机的话，勾选上自动前往凉亭和自动退岛并重新进岛&#xD;&#xA;-----------------------------------------------------------------------------------------------------&#xD;&#xA;【选用】&#xD;&#xA;&#xD;&#xA;1、塔出现播报 DR的新月岛助手-区域事件-通知 勾选两歧塔 （act识别聊天窗播报） 【选用】&#xD;&#xA;-----------------------------------------------------------------------------------------------------&#xD;&#xA;【必须】     必须加lua，否则箱子一个都不会开(你也可以开其他发包开箱 比如dr月岛助手里的)&#xD;&#xA;&#xD;&#xA;1、snd需要添加一个lua命名为：交互传送装置，双横线之间内容&#xD;&#xA;-----------------------------------------------------------------------------------------------------&#xD;&#xA;===================================================================&#xD;&#xA;local TARGET_NAMES = {&quot;个人战利品&quot;, &quot;传送装置&quot;}&#xD;&#xA;&#xD;&#xA;while true do&#xD;&#xA;    yield(&quot;/targetnpc&quot;)&#xD;&#xA;    yield(&quot;/wait 0.2&quot;)&#xD;&#xA;    if Entity.Target then&#xD;&#xA;        for _, name in ipairs(TARGET_NAMES) do&#xD;&#xA;            if Entity.Target.Name == name then&#xD;&#xA;                Entity.Target:Interact()&#xD;&#xA;                return  -- 结束脚本&#xD;&#xA;            end&#xD;&#xA;        end&#xD;&#xA;    end&#xD;&#xA;    yield(&quot;/wait 0.1&quot;)  -- 短暂停顿再扫下一轮&#xD;&#xA;end&#xD;&#xA;=====================================================================" />
+      <Trigger Enabled="false" Id="cd0cea1d-2e09-4ea8-b5c3-6d64c5437fcd" Name="【自用】TP+寻路去凉亭" RegularExpression="区域内两歧塔已出现">
+        <Actions>
+          <Action OrderNumber="1" ActionType="NamedCallback" ExecutionDelayExpression="10000" NamedCallbackName="command" NamedCallbackParam="/xsz-divetp -396.13684 7.235674 334.7853" />
+          <Action OrderNumber="2" ActionType="NamedCallback" ExecutionDelayExpression="5000" NamedCallbackName="command" NamedCallbackParam="/vnav moveto -320.07907 11.499996 422.04172" />
+        </Actions>
+      </Trigger>
+    </Triggers>
+  </ExportedFolder>
+</TriggernometryExport>
