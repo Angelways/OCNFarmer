@@ -12,6 +12,18 @@ public sealed partial class Plugin
     private bool showServerChanApiUrl;
     private enum TitleBarIcon { Play, Stop, FullView, CompactView }
 
+    private void OpenPluginDocs()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("https://github.com/Angelways/OCNFarmer/tree/main/Docs") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "打开 OCNFarmer 文档失败");
+        }
+    }
+
     private void OpenServerChanDocs()
     {
         try
@@ -601,6 +613,15 @@ public sealed partial class Plugin
             ImGui.TableNextColumn();
             if (ImGui.Button("查看寻宝战利品记录", new Vector2(profileControlWidth, 0f)))
                 treasureHistoryWindow.IsOpen = true;
+
+            ImGui.TableNextRow(ImGuiTableRowFlags.None, ImGui.GetFrameHeight() + 6f);
+            ImGui.TableNextColumn();
+            ImGui.Text("可能会用到的文档");
+            ImGui.TableNextColumn();
+            if (ImGui.Button("点击前往", new Vector2(profileControlWidth, 0f)))
+                OpenPluginDocs();
+            ImGui.SameLine(0f, 6f);
+            DrawInfoIcon("BDocsInfo", "自动葡挞相关功能不接收任何反馈。");
             ImGui.EndTable();
         }
     }

@@ -37,7 +37,7 @@ public sealed class TreasureRecord
 
 public sealed partial class Plugin : IDalamudPlugin
 {
-    private static readonly string PluginVersion = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "1.9.6.0";
+    private static readonly string PluginVersion = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "1.9.7.0";
     private static readonly IReadOnlyDictionary<string, int> LootStarLevels =
         new Dictionary<string, int>(StringComparer.Ordinal)
         {

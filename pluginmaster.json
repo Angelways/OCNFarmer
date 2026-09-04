@@ -3,13 +3,13 @@
     "Author": "Angelways",
     "Name": "OCNFarmer",
     "InternalName": "NorthIslandChestPlugin",
-    "AssemblyVersion": "1.9.6.0",
+    "AssemblyVersion": "1.9.7.0",
     "Description": "蜃景幻界新月岛 南征之章&北征之章全自动寻宝流程。Gugu对南岛流程以及钱币购买做出了贡献。启动命令：/ocnstart；停止命令：/ocnstop。",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
     "IconUrl": "https://raw.githubusercontent.com/Angelways/OCNFarmer/main/icon.png",
-    "DownloadLinkInstall": "https://github.com/Angelways/OCNFarmer/releases/download/v1.9.6.0/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/Angelways/OCNFarmer/releases/download/v1.9.6.0/latest.zip",
-    "Changelog": "优化物品统计显示与界面布局"
+    "DownloadLinkInstall": "https://github.com/Angelways/OCNFarmer/releases/download/v1.9.7.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Angelways/OCNFarmer/releases/download/v1.9.7.0/latest.zip",
+    "Changelog": "新增文档入口，优化界面布局"
   }
 ]
